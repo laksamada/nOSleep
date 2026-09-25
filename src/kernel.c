@@ -6,6 +6,7 @@
 
 // Nama fungsi utama mungkin berbeda di kode Anda, sesuaikan saja
 void kernel_setup(void) {
+    load_gdt(&_gdt_gdtr);
     framebuffer_clear();
     framebuffer_write(1, 0,  'H', 0, 0x1);
     framebuffer_write(1, 1,  'a', 0, 0x2);
