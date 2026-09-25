@@ -11,6 +11,8 @@ static uint8_t cursor_col = 0;
 void framebuffer_set_cursor(uint8_t r, uint8_t c) {
     // 1. Hitung posisi linear (1D) dari baris dan kolom. 
     // Lebar layar adalah 80 karakter.
+    cursor_row = r;
+    cursor_col = c;
     uint16_t pos = r * 80 + c;
 
     // 2. Kirim byte rendah (low byte) dari posisi kursor
@@ -22,6 +24,10 @@ void framebuffer_set_cursor(uint8_t r, uint8_t c) {
     out(CURSOR_PORT_DATA, (uint8_t)((pos >> 8) & 0xFF));
 }
 
+void framebuffer_get_cursor(uint8_t *r, uint8_t *c) {
+    if (r != NULL) *r = cursor_row;
+    if (c != NULL) *c = cursor_col;
+}
 void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg) {
     uint16_t index = (row * 80 + col) * 2;
 
