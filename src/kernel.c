@@ -2,10 +2,16 @@
 #include <stdbool.h>
 #include "header/cpu/gdt.h"
 #include "header/kernel-entrypoint.h"
+#include "header/text/framebuffer.h"
 
+// Nama fungsi utama mungkin berbeda di kode Anda, sesuaikan saja
 void kernel_setup(void) {
-    uint32_t a;
-    uint32_t volatile b = 0x0000BABE;
-    __asm__("mov $0xCAFE0000, %0" : "=r"(a));
-    while (true) b += 1;
+    framebuffer_clear();
+    framebuffer_write(1, 0,  'H', 0, 0x1);
+    framebuffer_write(1, 1,  'a', 0, 0x2);
+    framebuffer_write(1, 2, 'i', 0, 0x3);
+    framebuffer_write(1, 3, '!', 0, 0x4);
+    framebuffer_write(24, 79, 's', 0, 0xF);
+    framebuffer_set_cursor(0, 0);
+    while (true);
 }
