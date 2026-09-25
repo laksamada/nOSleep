@@ -71,7 +71,7 @@ void keyboard_isr(void) {
                     }
                     break;
                 case EXT_SCANCODE_RIGHT:
-                if(col<80){
+                if(col<79){
                 framebuffer_set_cursor(row, col + 1);
                     }
                     break;
