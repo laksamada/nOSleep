@@ -394,4 +394,10 @@ void allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_b
  */
 void sync_node(struct EXT2Inode *node, uint32_t inode);
 
+//Helper untuk read
+void read_inode(uint32_t inode_num, struct EXT2Inode *out_inode);
+
+void read_inode_content(struct EXT2Inode *inode, uint8_t *out_buffer, uint32_t buffer_size); 
+
+uint32_t find_inode_by_name(uint32_t parent_inode_num, char *target_name, uint8_t name_len);
 #endif
