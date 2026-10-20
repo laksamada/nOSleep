@@ -18,6 +18,23 @@ const uint8_t fs_signature[BLOCK_SIZE] = {
     [BLOCK_SIZE-1] = 'k',
 };
 
+char *get_entry_name(void *entry) {
+    return (char *)entry + sizeof(struct EXT2DirectoryEntry);
+}
+
+struct EXT2DirectoryEntry *get_next_directory_entry(struct EXT2DirectoryEntry *entry) {
+    return (struct EXT2DirectoryEntry *)((uint8_t *)entry + entry->rec_len);
+}
+
+uint16_t get_entry_record_len(uint8_t name_len) {
+    return (uint16_t)((sizeof(struct EXT2DirectoryEntry) + name_len + 3u) & ~3u);
+}
+
+uint32_t get_dir_first_child_offset(void *ptr) {
+    struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)ptr;
+    struct EXT2DirectoryEntry *dotdot = get_next_directory_entry(entry);
+    return entry->rec_len + get_entry_record_len(dotdot->name_len);
+}
 // Fungsi pembantu pemetaan inode 
 uint32_t inode_to_bgd(uint32_t inode) {
     if (inode == 0) return 0;
@@ -27,6 +44,30 @@ uint32_t inode_to_bgd(uint32_t inode) {
 uint32_t inode_to_local(uint32_t inode) {
     if (inode == 0) return 0;
     return (inode - 1) % INODES_PER_GROUP;
+}
+
+void init_directory_table(struct EXT2Inode *node, uint32_t inode, uint32_t parent_inode) {
+    allocate_node_blocks(NULL, node, inode_to_bgd(inode));
+    if (node->i_block[0] == 0) {
+        return;
+    }
+
+    uint8_t buffer[BLOCK_SIZE] = {0};
+    struct EXT2DirectoryEntry *dot = (struct EXT2DirectoryEntry *)buffer;
+    dot->inode = inode;
+    dot->rec_len = get_entry_record_len(1);
+    dot->name_len = 1;
+    dot->file_type = EXT2_FT_DIR;
+    memcpy(get_entry_name(dot), ".", 1);
+
+    struct EXT2DirectoryEntry *dotdot = get_next_directory_entry(dot);
+    dotdot->inode = parent_inode;
+    dotdot->rec_len = BLOCK_SIZE - dot->rec_len;
+    dotdot->name_len = 2;
+    dotdot->file_type = EXT2_FT_DIR;
+    memcpy(get_entry_name(dotdot), "..", 2);
+
+    write_blocks(buffer, node->i_block[0], 1);
 }
 
 // FS Initializer
@@ -329,4 +370,266 @@ int8_t read(struct EXT2DriverRequest request) {
 
     read_inode_content(&target_inode, request.buf, target_inode.i_size);
     return 0; // Success
+}
+
+static void write_filesystem_metadata(void) {
+    uint8_t buffer[BLOCK_SIZE] = {0};
+    memcpy(buffer, &superblock, sizeof(superblock));
+    write_blocks(buffer, 1, 1);
+
+    memset(buffer, 0, sizeof(buffer));
+    memcpy(buffer, &bgd_table, sizeof(bgd_table));
+    write_blocks(buffer, 2, 1);
+}
+
+void sync_node(struct EXT2Inode *node, uint32_t inode) {
+    if (node == NULL || inode == 0 || inode > INODES_PER_GROUP * GROUPS_COUNT) {
+        return;
+    }
+
+    uint32_t bgd_idx = inode_to_bgd(inode);
+    uint32_t local_idx = inode_to_local(inode);
+    uint32_t inode_offset = local_idx * INODE_SIZE;
+    uint32_t inode_block = bgd_table.table[bgd_idx].bg_inode_table + inode_offset / BLOCK_SIZE;
+    uint32_t byte_offset = inode_offset % BLOCK_SIZE;
+    uint32_t first_part_size = BLOCK_SIZE - byte_offset;
+    if (first_part_size > sizeof(*node)) {
+        first_part_size = sizeof(*node);
+    }
+
+    uint8_t buffer[BLOCK_SIZE];
+    read_blocks(buffer, inode_block, 1);
+    memcpy(buffer + byte_offset, node, first_part_size);
+    write_blocks(buffer, inode_block, 1);
+
+    if (first_part_size < sizeof(*node)) {
+        read_blocks(buffer, inode_block + 1, 1);
+        memcpy(buffer, (uint8_t *)node + first_part_size,
+               sizeof(*node) - first_part_size);
+        write_blocks(buffer, inode_block + 1, 1);
+    }
+}
+
+int8_t write(struct EXT2DriverRequest *request) {
+    if (request == NULL || request->parent_inode == 0 ||
+        request->parent_inode > INODES_PER_GROUP * GROUPS_COUNT ||
+        request->name == NULL || request->name_len == 0 ||
+        (!request->is_directory && request->buffer_size > 0 && request->buf == NULL)) {
+        return -1;
+    }
+
+    struct EXT2Inode parent_node;
+    read_inode(request->parent_inode, &parent_node);
+
+    if ((parent_node.i_mode & EXT2_S_IFDIR) == 0) {
+        return 2;
+    }
+    if (parent_node.i_block[0] == 0) {
+        return 2;
+    }
+
+    uint32_t existing_inode = find_inode_by_name(request->parent_inode, request->name, request->name_len);
+    if (existing_inode != 0) {
+        return 1;
+    }
+
+    uint32_t blocks_needed = request->buffer_size / BLOCK_SIZE;
+    if (request->buffer_size % BLOCK_SIZE != 0) {
+        blocks_needed++;
+    }
+    if (request->is_directory) {
+        blocks_needed = 1;
+    }
+    uint32_t blocks_to_allocate = blocks_needed + (blocks_needed > 12 ? 1u : 0u);
+    if (blocks_needed > 12 + BLOCK_SIZE / sizeof(uint32_t) ||
+        blocks_to_allocate > bgd_table.table[0].bg_free_blocks_count) {
+        return -1;
+    }
+
+    uint32_t new_inode_num = allocate_node();
+    if (new_inode_num == 0) {
+        return -1;
+    }
+
+    struct EXT2Inode new_node;
+    memset(&new_node, 0, sizeof(struct EXT2Inode));
+
+    uint32_t prefered_bgd = inode_to_bgd(new_inode_num);
+
+    if (request->is_directory) {
+        new_node.i_mode = EXT2_S_IFDIR;
+        new_node.i_size = BLOCK_SIZE;
+        new_node.i_blocks = 1;
+
+        init_directory_table(&new_node, new_inode_num, request->parent_inode);
+
+        bgd_table.table[prefered_bgd].bg_used_dirs_count++;
+    } else {
+        new_node.i_mode = EXT2_S_IFREG;
+        new_node.i_size = request->buffer_size;
+
+        new_node.i_blocks = blocks_needed + (blocks_needed > 12 ? 1u : 0u);
+
+        if (blocks_needed > 0) {
+            allocate_node_blocks(request->buf, &new_node, prefered_bgd);
+            if (new_node.i_block[0] == 0) {
+                return -1;
+            }
+        }
+    }
+
+    sync_node(&new_node, new_inode_num);
+
+    uint8_t parent_buf[BLOCK_SIZE];
+    read_inode_content(&parent_node, parent_buf, BLOCK_SIZE);
+
+    uint16_t required_rec_len = get_entry_record_len(request->name_len);
+
+    struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)parent_buf;
+    uint32_t offset = 0;
+    bool entry_added = false;
+
+    while (offset < BLOCK_SIZE && offset < parent_node.i_size) {
+        uint16_t actual_len = get_entry_record_len(entry->name_len);
+        if (entry->rec_len < actual_len || entry->rec_len > BLOCK_SIZE - offset) {
+            return -1;
+        }
+
+        if (entry->rec_len - actual_len >= required_rec_len) {
+            uint16_t old_rec_len = entry->rec_len;
+
+            entry->rec_len = actual_len;
+
+            struct EXT2DirectoryEntry *new_entry = (struct EXT2DirectoryEntry *)((uint8_t *)entry + actual_len);
+
+            new_entry->inode = new_inode_num;
+            new_entry->rec_len = old_rec_len - actual_len;
+            new_entry->name_len = request->name_len;
+            new_entry->file_type = request->is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+
+            char *entry_name_ptr = get_entry_name(new_entry);
+            memcpy(entry_name_ptr, request->name, request->name_len);
+
+            entry_added = true;
+            break;
+        }
+
+        offset += entry->rec_len;
+        if (offset < parent_node.i_size) {
+            entry = get_next_directory_entry(entry);
+        }
+    }
+
+    if (!entry_added) {
+        return -1;
+    }
+
+    write_blocks(parent_buf, parent_node.i_block[0], 1);
+    sync_node(&parent_node, request->parent_inode);
+
+    write_filesystem_metadata();
+
+    return 0;
+}
+
+static bool allocate_data_block(uint32_t *block_num) {
+    if (bgd_table.table[0].bg_free_blocks_count == 0 ||
+        superblock.s_free_blocks_count == 0) {
+        return false;
+    }
+
+    uint8_t bitmap[BLOCK_SIZE];
+    uint32_t bitmap_block = bgd_table.table[0].bg_block_bitmap;
+    read_blocks(bitmap, bitmap_block, 1);
+
+    for (uint32_t bit = 0; bit < BLOCKS_PER_GROUP; bit++) {
+        uint8_t mask = (uint8_t)(1u << (bit % 8));
+        if ((bitmap[bit / 8] & mask) == 0) {
+            bitmap[bit / 8] |= mask;
+            write_blocks(bitmap, bitmap_block, 1);
+            bgd_table.table[0].bg_free_blocks_count--;
+            superblock.s_free_blocks_count--;
+            *block_num = bit;
+            write_filesystem_metadata();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+uint32_t allocate_node(void) {
+    if (bgd_table.table[0].bg_free_inodes_count == 0 ||
+        superblock.s_free_inodes_count == 0) {
+        return 0;
+    }
+
+    uint8_t bitmap[BLOCK_SIZE];
+    uint32_t bitmap_block = bgd_table.table[0].bg_inode_bitmap;
+    read_blocks(bitmap, bitmap_block, 1);
+
+    for (uint32_t bit = 0; bit < INODES_PER_GROUP; bit++) {
+        uint8_t mask = (uint8_t)(1u << (bit % 8));
+        if ((bitmap[bit / 8] & mask) == 0) {
+            bitmap[bit / 8] |= mask;
+            write_blocks(bitmap, bitmap_block, 1);
+            bgd_table.table[0].bg_free_inodes_count--;
+            superblock.s_free_inodes_count--;
+            write_filesystem_metadata();
+            return bit + 1;
+        }
+    }
+
+    return 0;
+}
+
+void allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_bgd) {
+    (void)prefered_bgd;
+
+    uint32_t blocks_needed = node->i_size / BLOCK_SIZE;
+    if (node->i_size % BLOCK_SIZE != 0) {
+        blocks_needed++;
+    }
+    if (blocks_needed > 12 + BLOCK_SIZE / sizeof(uint32_t)) {
+        return;
+    }
+    uint32_t total_blocks = blocks_needed + (blocks_needed > 12 ? 1u : 0u);
+    if (total_blocks > bgd_table.table[0].bg_free_blocks_count) {
+        return;
+    }
+
+    uint32_t indirect[BLOCK_SIZE / sizeof(uint32_t)] = {0};
+    uint32_t indirect_block = 0;
+    if (blocks_needed > 12 && !allocate_data_block(&indirect_block)) {
+        return;
+    }
+
+    uint8_t block_buffer[BLOCK_SIZE];
+    uint32_t bytes_written = 0;
+    for (uint32_t i = 0; i < blocks_needed; i++) {
+        uint32_t data_block;
+        if (!allocate_data_block(&data_block)) {
+            return;
+        }
+
+        if (i < 12) {
+            node->i_block[i] = data_block;
+        } else {
+            indirect[i - 12] = data_block;
+        }
+
+        memset(block_buffer, 0, sizeof(block_buffer));
+        uint32_t remaining = node->i_size - bytes_written;
+        uint32_t copy_size = remaining < BLOCK_SIZE ? remaining : BLOCK_SIZE;
+        if (ptr != NULL && copy_size != 0) {
+            memcpy(block_buffer, (uint8_t *)ptr + bytes_written, copy_size);
+        }
+        write_blocks(block_buffer, data_block, 1);
+        bytes_written += copy_size;
+    }
+
+    if (blocks_needed > 12) {
+        node->i_block[12] = indirect_block;
+        write_blocks(indirect, indirect_block, 1);
+    }
 }
