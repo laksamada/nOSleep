@@ -150,8 +150,8 @@ void read_inode(uint32_t inode_num, struct EXT2Inode *out_inode) {
     uint32_t inode_table_start = bgd_table.table[bgd_idx].bg_inode_table; //Dari yang sudah di initialize
 
     // Hitung offset blok dan offset byte di dalam blok
-    uint32_t block_offset = (local_idx * INODE_SIZE) / BLOCK_SIZE;
-    uint32_t byte_offset_in_block = (local_idx * INODE_SIZE) % BLOCK_SIZE;
+    uint32_t block_offset = local_idx / INODES_PER_TABLE;
+    uint32_t byte_offset_in_block = (local_idx % INODES_PER_TABLE) * INODE_SIZE;
 
     // Baca blok disk yang berisi inode tersebut
     uint8_t buffer[BLOCK_SIZE];
@@ -329,4 +329,208 @@ int8_t read(struct EXT2DriverRequest request) {
 
     read_inode_content(&target_inode, request.buf, target_inode.i_size);
     return 0; // Success
+}
+
+static bool is_directory_inode(struct EXT2Inode *node)
+{
+    return node->i_mode == EXT2_FT_DIR || (node->i_mode & EXT2_S_IFDIR) != 0;
+}
+
+static bool is_dot_name(const char *name, uint8_t name_len)
+{
+    return (name_len == 1 && name[0] == '.') ||
+           (name_len == 2 && name[0] == '.' && name[1] == '.');
+}
+
+static uint32_t get_directory_block(struct EXT2Inode *node, uint32_t index)
+{
+    if (index < 12)
+        return node->i_block[index];
+    if (index < 12 + BLOCK_SIZE / sizeof(uint32_t) && node->i_block[12] != 0) {
+        uint32_t locations[BLOCK_SIZE / sizeof(uint32_t)];
+        read_blocks(locations, node->i_block[12], 1);
+        return locations[index - 12];
+    }
+    return 0;
+}
+
+static void commit_ext2_metadata(void)
+{
+    struct BlockBuffer buffer;
+    memset(&buffer, 0, sizeof(buffer));
+    memcpy(&buffer, &superblock, sizeof(struct EXT2Superblock));
+    write_blocks(&buffer, 1, 1);
+    memset(&buffer, 0, sizeof(buffer));
+    memcpy(&buffer, &bgd_table, sizeof(struct EXT2BlockGroupDescriptorTable));
+    write_blocks(&buffer, 2, 1);
+}
+
+static void remove_directory_entry(uint8_t *block, uint32_t target)
+{
+    uint32_t previous = BLOCK_SIZE, last = 0, end = 0, offset = 0;
+    while (offset < BLOCK_SIZE) {
+        struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)(block + offset);
+        if (entry->inode == 0 || entry->rec_len == 0)
+            break;
+        if (offset < target)
+            previous = offset;
+        last = offset;
+        offset += entry->rec_len;
+        end = offset;
+    }
+
+    uint16_t rec_len = ((struct EXT2DirectoryEntry *)(block + target))->rec_len;
+    if (end == BLOCK_SIZE && last == target && previous != BLOCK_SIZE) {
+        ((struct EXT2DirectoryEntry *)(block + previous))->rec_len += rec_len;
+        memset(block + target, 0, rec_len);
+        return;
+    }
+
+    memmove(block + target, block + target + rec_len, end - target - rec_len);
+    memset(block + end - rec_len, 0, rec_len);
+    if (end == BLOCK_SIZE && last != target)
+        ((struct EXT2DirectoryEntry *)(block + last - rec_len))->rec_len += rec_len;
+}
+
+bool is_directory_empty(uint32_t inode)
+{
+    struct EXT2Inode node;
+    read_inode(inode, &node);
+    for (uint32_t index = 0; index * BLOCK_SIZE < node.i_size; index++) {
+        uint32_t location = get_directory_block(&node, index);
+        if (location == 0)
+            break;
+
+        struct BlockBuffer block;
+        read_blocks(&block, location, 1);
+        uint32_t offset = 0;
+        while (offset < BLOCK_SIZE) {
+            struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)(block.buf + offset);
+            if (entry->inode == 0 || entry->rec_len == 0)
+                break;
+            if (!is_dot_name((char *)(entry + 1), entry->name_len))
+                return false;
+            offset += entry->rec_len;
+        }
+    }
+    return true;
+}
+
+uint32_t deallocate_block(uint32_t *locations, uint32_t blocks, struct BlockBuffer *bitmap, uint32_t depth, uint32_t *last_bgd, bool bgd_loaded)
+{
+    for (uint32_t i = 0; i < blocks; i++) {
+        if (locations[i] == 0 || locations[i] >= superblock.s_blocks_count)
+            continue;
+
+        if (depth > 0) {
+            uint32_t children[BLOCK_SIZE / sizeof(uint32_t)];
+            read_blocks(children, locations[i], 1);
+            deallocate_block(children, BLOCK_SIZE / sizeof(uint32_t), bitmap, depth - 1, last_bgd, bgd_loaded);
+            bgd_loaded = *last_bgd < GROUPS_COUNT;
+        }
+
+        uint32_t bgd = locations[i] / BLOCKS_PER_GROUP;
+        uint32_t local = locations[i] % BLOCKS_PER_GROUP;
+        if (!bgd_loaded || *last_bgd != bgd) {
+            if (bgd_loaded)
+                write_blocks(bitmap, bgd_table.table[*last_bgd].bg_block_bitmap, 1);
+            read_blocks(bitmap, bgd_table.table[bgd].bg_block_bitmap, 1);
+            *last_bgd = bgd;
+            bgd_loaded = true;
+        }
+
+        uint8_t mask = 1 << (local % 8);
+        if (bitmap->buf[local / 8] & mask) {
+            bitmap->buf[local / 8] &= ~mask;
+            bgd_table.table[bgd].bg_free_blocks_count++;
+            superblock.s_free_blocks_count++;
+        }
+    }
+    return *last_bgd;
+}
+
+void deallocate_blocks(void *loc, uint32_t blocks)
+{
+    if (blocks == 0)
+        return;
+
+    uint32_t *locations = loc;
+    struct BlockBuffer bitmap;
+    uint32_t last_bgd = GROUPS_COUNT;
+    deallocate_block(locations, 12, &bitmap, 0, &last_bgd, false);
+    for (uint32_t depth = 1; depth <= 3; depth++)
+        deallocate_block(locations + 11 + depth, 1, &bitmap, depth, &last_bgd, last_bgd < GROUPS_COUNT);
+
+    if (last_bgd < GROUPS_COUNT)
+        write_blocks(&bitmap, bgd_table.table[last_bgd].bg_block_bitmap, 1);
+}
+
+void deallocate_node(uint32_t inode)
+{
+    struct EXT2Inode node;
+    read_inode(inode, &node);
+    deallocate_blocks(node.i_block, node.i_blocks);
+
+    uint32_t bgd = inode_to_bgd(inode);
+    uint32_t local = inode_to_local(inode);
+    struct BlockBuffer bitmap;
+    read_blocks(&bitmap, bgd_table.table[bgd].bg_inode_bitmap, 1);
+
+    uint8_t mask = 1 << (local % 8);
+    if (bitmap.buf[local / 8] & mask) {
+        bitmap.buf[local / 8] &= ~mask;
+        write_blocks(&bitmap, bgd_table.table[bgd].bg_inode_bitmap, 1);
+        bgd_table.table[bgd].bg_free_inodes_count++;
+        superblock.s_free_inodes_count++;
+        if (is_directory_inode(&node) && bgd_table.table[bgd].bg_used_dirs_count > 0)
+            bgd_table.table[bgd].bg_used_dirs_count--;
+    }
+    commit_ext2_metadata();
+}
+
+int8_t delete(struct EXT2DriverRequest request)
+{
+    if (request.parent_inode == 0 || request.parent_inode > superblock.s_inodes_count)
+        return 3;
+
+    struct EXT2Inode parent;
+    read_inode(request.parent_inode, &parent);
+    if (!is_directory_inode(&parent))
+        return 3;
+    if (request.name_len == 0)
+        return 1;
+    if (is_dot_name(request.name, request.name_len))
+        return -1;
+
+    for (uint32_t index = 0; index * BLOCK_SIZE < parent.i_size; index++) {
+        uint32_t location = get_directory_block(&parent, index);
+        if (location == 0)
+            break;
+
+        struct BlockBuffer block;
+        read_blocks(&block, location, 1);
+        uint32_t offset = 0;
+        while (offset < BLOCK_SIZE) {
+            struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)(block.buf + offset);
+            if (entry->inode == 0 || entry->rec_len == 0)
+                break;
+
+            if (entry->name_len == request.name_len &&
+                memcmp(entry + 1, request.name, request.name_len) == 0) {
+                uint32_t inode = entry->inode;
+                struct EXT2Inode node;
+                read_inode(inode, &node);
+                if (is_directory_inode(&node) == request.is_directory) {
+                    if (request.is_directory && !is_directory_empty(inode))
+                        return 2;
+                    remove_directory_entry(block.buf, offset);
+                    write_blocks(&block, location, 1);
+                    deallocate_node(inode);
+                    return 0;
+                }
+            }
+            offset += entry->rec_len;
+        }
+    }
+    return 1;
 }
