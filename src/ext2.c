@@ -594,8 +594,8 @@ void sync_node(struct EXT2Inode *node, uint32_t inode) {
 
     uint32_t bgd_idx = inode_to_bgd(inode);
     uint32_t local_idx = inode_to_local(inode);
-    uint32_t inode_offset = local_idx * INODE_SIZE;
-    uint32_t inode_block = bgd_table.table[bgd_idx].bg_inode_table + inode_offset / BLOCK_SIZE;
+    uint32_t inode_offset = (local_idx % INODES_PER_TABLE) * INODE_SIZE;
+    uint32_t inode_block = bgd_table.table[bgd_idx].bg_inode_table + local_idx / INODES_PER_TABLE;
     uint32_t byte_offset = inode_offset % BLOCK_SIZE;
     uint32_t first_part_size = BLOCK_SIZE - byte_offset;
     if (first_part_size > sizeof(*node)) {

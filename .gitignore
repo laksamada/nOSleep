@@ -3,3 +3,5 @@
 *.o
 .DS_Store
 **/.DS_Store
+test/hasil/
+__pycache__/
