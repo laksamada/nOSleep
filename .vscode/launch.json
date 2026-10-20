@@ -3,40 +3,13 @@
     "configurations": [
         {
             "name": "Kernel",
-            "type": "cppdbg",
+            "type": "lldb",
             "request": "launch",
-            "program": "${workspaceRoot}/bin/kernel",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "gdb",
-            "setupCommands": [
-                {
-                    "description": "Enable pretty-printing for gdb",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                }
-            ],
+            "targetCreateCommands": ["target create '${workspaceRoot}/bin/kernel'"],
+            "processCreateCommands": ["gdb-remote localhost:1234", "c"],
             "preLaunchTask": "Launch QEMU",
-            "postDebugTask": "Exit QEMU",
-            "targetArchitecture": "x86",
-            "customLaunchSetupCommands": [
-                {
-                    "text": "target remote localhost:1234",
-                    "description": "Connect to QEMU remote debugger"
-                },
-                {
-                    "text": "symbol-file kernel",
-                    "description": "Get kernel symbols"
-                },
-                {
-                    "text": "set output-radix 16",
-                    "description": "Use hexadecimal output"
-                }
-            ],
-            "avoidWindowsConsoleRedirection": true
-        }
+            "postDebugTask": "Exit QEMU"
+        },
     ]
 }
+

@@ -4,6 +4,10 @@
 #include "header/stdlib/string.h"
 #include "header/filesystem/ext2.h"
 
+// Instance variabel global 
+struct EXT2Superblock superblock;
+struct EXT2BlockGroupDescriptorTable bgd_table;
+
 const uint8_t fs_signature[BLOCK_SIZE] = {
     'C', 'o', 'u', 'r', 's', 'e', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',  ' ',
     'D', 'e', 's', 'i', 'g', 'n', 'e', 'd', ' ', 'b', 'y', ' ', ' ', ' ', ' ',  ' ',
@@ -13,6 +17,126 @@ const uint8_t fs_signature[BLOCK_SIZE] = {
     [BLOCK_SIZE-2] = 'O',
     [BLOCK_SIZE-1] = 'k',
 };
+
+// Fungsi pembantu pemetaan inode 
+uint32_t inode_to_bgd(uint32_t inode) {
+    if (inode == 0) return 0;
+    return (inode - 1) / INODES_PER_GROUP;
+}
+
+uint32_t inode_to_local(uint32_t inode) {
+    if (inode == 0) return 0;
+    return (inode - 1) % INODES_PER_GROUP;
+}
+
+// FS Initializer
+
+bool is_empty_storage(void) {
+    uint8_t boot_sector[BLOCK_SIZE];
+    read_blocks(boot_sector, BOOT_SECTOR, 1);
+    return (memcmp(boot_sector, fs_signature, BLOCK_SIZE) != 0);
+}
+
+void create_ext2(void) {
+    // 1. Tulis boot sector 
+    write_blocks(fs_signature, BOOT_SECTOR, 1);
+
+    // 2. Setup Superblock
+    memset(&superblock, 0, sizeof(struct EXT2Superblock));
+    superblock.s_inodes_count      = INODES_PER_GROUP * GROUPS_COUNT;
+    superblock.s_blocks_count      = BLOCKS_PER_GROUP * GROUPS_COUNT;
+    superblock.s_r_blocks_count    = 0;
+    superblock.s_free_blocks_count = superblock.s_blocks_count - 22; // 22 block pertama terpakai sistem + root
+    superblock.s_free_inodes_count = superblock.s_inodes_count - 1;  // Root inode (1)
+    superblock.s_first_data_block  = 1;
+    superblock.s_first_ino         = 1;
+    superblock.s_blocks_per_group  = BLOCKS_PER_GROUP;
+    superblock.s_frags_per_group   = BLOCKS_PER_GROUP;
+    superblock.s_inodes_per_group  = INODES_PER_GROUP;
+    superblock.s_magic             = EXT2_SUPER_MAGIC;
+
+    uint8_t sb_buf[BLOCK_SIZE] = {0};
+    memcpy(sb_buf, &superblock, sizeof(struct EXT2Superblock));
+    write_blocks(sb_buf, 1, 1);
+
+    // 3. Setup Block Group Descriptor Table
+    memset(&bgd_table, 0, sizeof(struct EXT2BlockGroupDescriptorTable));
+    for (uint32_t i = 0; i < GROUPS_COUNT; i++) {
+        uint32_t base_block = i * BLOCKS_PER_GROUP;
+        bgd_table.table[i].bg_block_bitmap      = base_block + 3;
+        bgd_table.table[i].bg_inode_bitmap      = base_block + 4;
+        bgd_table.table[i].bg_inode_table       = base_block + 5;
+        bgd_table.table[i].bg_free_blocks_count = BLOCKS_PER_GROUP;
+        bgd_table.table[i].bg_free_inodes_count = INODES_PER_GROUP;
+        bgd_table.table[i].bg_used_dirs_count   = 0;
+    }
+
+    // Group 0 memiliki root
+    bgd_table.table[0].bg_free_blocks_count -= 22;
+    bgd_table.table[0].bg_free_inodes_count -= 1;
+    bgd_table.table[0].bg_used_dirs_count   = 1;
+
+    uint8_t bgd_buf[BLOCK_SIZE] = {0};
+    memcpy(bgd_buf, &bgd_table, sizeof(struct EXT2BlockGroupDescriptorTable));
+    write_blocks(bgd_buf, 2, 1);
+
+    // 4. Bitmaps Group 0
+    uint8_t block_bitmap[BLOCK_SIZE] = {0};
+    uint8_t inode_bitmap[BLOCK_SIZE] = {0};
+
+    for (uint32_t i = 0; i < 22; i++) {
+        block_bitmap[i / 8] |= (1 << (i % 8));
+    }
+    inode_bitmap[0] |= (1 << 0); // Inode 1 terpakai
+
+    write_blocks(block_bitmap, bgd_table.table[0].bg_block_bitmap, 1);
+    write_blocks(inode_bitmap, bgd_table.table[0].bg_inode_bitmap, 1);
+
+    // 5. Inode Root (Inode 1)
+    struct EXT2Inode root_inode;
+    memset(&root_inode, 0, sizeof(struct EXT2Inode));
+    root_inode.i_mode     = EXT2_S_IFDIR | EXT2_FT_DIR;
+    root_inode.i_size     = BLOCK_SIZE;
+    root_inode.i_blocks   = 1;
+    root_inode.i_block[0] = bgd_table.table[0].bg_inode_table + INODES_TABLE_BLOCK_COUNT; // Block 21
+
+    uint8_t inode_tb_buf[BLOCK_SIZE] = {0};
+    memcpy(inode_tb_buf, &root_inode, sizeof(struct EXT2Inode));
+    write_blocks(inode_tb_buf, bgd_table.table[0].bg_inode_table, 1);
+
+    // 6. Data Block Root ("." & "..")
+    uint8_t dir_data[BLOCK_SIZE] = {0};
+
+    struct EXT2DirectoryEntry *entry_dot = (struct EXT2DirectoryEntry *)dir_data;
+    entry_dot->inode     = 1;
+    entry_dot->rec_len   = sizeof(struct EXT2DirectoryEntry) + 4; // Align 4 byte
+    entry_dot->name_len  = 1;
+    entry_dot->file_type = EXT2_FT_DIR;
+    memcpy(dir_data + sizeof(struct EXT2DirectoryEntry), ".", 1);
+
+    struct EXT2DirectoryEntry *entry_dotdot = (struct EXT2DirectoryEntry *)(dir_data + entry_dot->rec_len);
+    entry_dotdot->inode     = 1;
+    entry_dotdot->rec_len   = BLOCK_SIZE - entry_dot->rec_len;
+    entry_dotdot->name_len  = 2;
+    entry_dotdot->file_type = EXT2_FT_DIR;
+    memcpy((uint8_t *)entry_dotdot + sizeof(struct EXT2DirectoryEntry), "..", 2);
+
+    write_blocks(dir_data, root_inode.i_block[0], 1);
+}
+
+void initialize_filesystem_ext2(void) {
+    if (is_empty_storage()) {
+        create_ext2();
+    } else {
+        uint8_t sb_buf[BLOCK_SIZE];
+        read_blocks(sb_buf, 1, 1);
+        memcpy(&superblock, sb_buf, sizeof(struct EXT2Superblock));
+
+        uint8_t bgd_buf[BLOCK_SIZE];
+        read_blocks(bgd_buf, 2, 1);
+        memcpy(&bgd_table, bgd_buf, sizeof(struct EXT2BlockGroupDescriptorTable));
+    }
+}
 
 //read
 

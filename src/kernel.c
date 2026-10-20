@@ -7,6 +7,7 @@
 #include "header/cpu/idt.h"
 #include "header/driver/keyboard.h"
 #include "header/driver/disk.h"
+#include "header/filesystem/ext2.h"
 
 // Nama fungsi utama mungkin berbeda di kode Anda, sesuaikan saja
 void kernel_setup(void) {
@@ -16,6 +17,7 @@ void kernel_setup(void) {
     initialize_idt();
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
+    initialize_filesystem_ext2();
 
     struct BlockBuffer b;
     for (int i = 0; i < 512; i++) b.buf[i] = i % 16;

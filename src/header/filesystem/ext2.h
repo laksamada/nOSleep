@@ -1,11 +1,11 @@
 #ifndef _EXT2_H
 #define _EXT2_H
 
-#include "disk.h"
+#include "../driver/disk.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "../stdlib/stdtype.h"
+#include "stdlib/stdtype.h"
 
 
 /* -- IF2130 File System constants -- */
@@ -206,7 +206,7 @@ struct EXT2DirectoryEntry
     /**
      * 8bit value indicating the length of the file name.
      */
-    uint16_t name_len;
+    uint8_t name_len;
 
     /**
      * 8bit unsigned value used to indicate file type.
@@ -214,6 +214,10 @@ struct EXT2DirectoryEntry
     uint8_t file_type;
 
 }__attribute__((packed));
+
+/* Global state declaration */
+extern struct EXT2Superblock superblock;
+extern struct EXT2BlockGroupDescriptorTable bgd_table;
 
 /**
  *  REGULAR function
