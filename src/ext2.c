@@ -616,16 +616,21 @@ void sync_node(struct EXT2Inode *node, uint32_t inode) {
 }
 
 int8_t write(struct EXT2DriverRequest *request) {
-    if (request == NULL || request->parent_inode == 0 ||
-        request->parent_inode > INODES_PER_GROUP * GROUPS_COUNT ||
-        request->name == NULL || request->name_len == 0 ||
+    // 1. Validasi pointer dasar & nama (return -1 jika invalid)
+    if (request == NULL || request->name == NULL || request->name_len == 0 ||
         (!request->is_directory && request->buffer_size > 0 && request->buf == NULL)) {
         return -1;
+    }
+
+    // 2. Validasi parent_inode (return 2 jika parent invalid/tidak ada/di luar batas)
+    if (request->parent_inode == 0 || request->parent_inode > INODES_PER_GROUP * GROUPS_COUNT) {
+        return 2;
     }
 
     struct EXT2Inode parent_node;
     read_inode(request->parent_inode, &parent_node);
 
+    // 3. Validasi apakah parent memang sebuah direktori
     if ((parent_node.i_mode & EXT2_S_IFDIR) == 0) {
         return 2;
     }
