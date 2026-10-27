@@ -46,6 +46,12 @@ loader_entrypoint:         ; the loader label (defined as entry point in linker 
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE], eax
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xC00], eax
 
+    ; Recursive (fractal) mapping: PDE ke-1023 menunjuk ke page directory itu sendiri.
+    ; Wajib ada supaya paging_get_page_table() bisa mengakses page table di 0xFFC00000.
+    mov eax, _paging_kernel_page_directory - KERNEL_VIRTUAL_BASE
+    or  eax, 0x3
+    mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xFFC], eax
+
     ; Set CR3 (CPU page register)
     mov eax, _paging_kernel_page_directory - KERNEL_VIRTUAL_BASE
     mov cr3, eax
@@ -102,4 +108,3 @@ set_tss_register:
     mov ax, 0x28 | 0 ; GDT TSS Selector, ring 0
     ltr ax
     ret
-
