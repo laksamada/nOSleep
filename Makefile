@@ -83,3 +83,10 @@ iso: kernel
 	@cp $(SOURCE_FOLDER)/menu.lst   $(OUTPUT_FOLDER)/iso/boot/grub/
 	@$(MKISO) -R -b boot/grub/grub1 -no-emul-boot -boot-load-size 4 -boot-info-table -o $(OUTPUT_FOLDER)/$(ISO_NAME).iso $(OUTPUT_FOLDER)/iso
 	@rm -r $(OUTPUT_FOLDER)/iso/
+
+inserter:
+	@$(CC) -Wno-builtin-declaration-mismatch -g -I$(SOURCE_FOLDER) \
+		$(SOURCE_FOLDER)/stdlib/string.c \
+		$(SOURCE_FOLDER)/ext2.c \
+		$(SOURCE_FOLDER)/external-inserter.c \
+		-o $(OUTPUT_FOLDER)/inserter
