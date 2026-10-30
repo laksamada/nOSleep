@@ -4,6 +4,7 @@
 #include "header/cpu/gdt.h"
 #include "header/driver/keyboard.h"
 #include "header/filesystem/ext2.h"
+#include "header/memory/swap.h"
 #include "header/text/framebuffer.h"
 
 struct TSSEntry _interrupt_tss_entry = {
