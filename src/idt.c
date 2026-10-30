@@ -10,6 +10,7 @@ struct IDTR _idt_idtr = {
 
 void initialize_idt(void){
     for (int i = 0; i < ISR_STUB_TABLE_LIMIT; i++) set_interrupt_gate(i, isr_stub_table[i], GDT_KERNEL_CODE_SEGMENT_SELECTOR, 0);
+    set_interrupt_gate(SYSCALL_INTERRUPT_NUMBER, isr_stub_table[SYSCALL_INTERRUPT_NUMBER], GDT_KERNEL_CODE_SEGMENT_SELECTOR, 0x3);
     __asm__ volatile("lidt %0" : : "m" (_idt_idtr));
     __asm__ volatile("sti");
 }

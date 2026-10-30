@@ -8,6 +8,7 @@
 // IDT hard limit, see Intel x86 manual 3a - 6.10 Interrupt Descriptor Table
 #define IDT_MAX_ENTRY_COUNT    256
 #define ISR_STUB_TABLE_LIMIT   64
+#define SYSCALL_INTERRUPT_NUMBER 0x30
 #define INTERRUPT_GATE_R_BIT_1 0b000
 #define INTERRUPT_GATE_R_BIT_2 0b110
 #define INTERRUPT_GATE_R_BIT_3 0b0

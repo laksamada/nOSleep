@@ -276,6 +276,8 @@ uint32_t inode_to_bgd(uint32_t inode);
  */
 uint32_t inode_to_local(uint32_t inode);
 
+void read_inode(uint32_t inode_num, struct EXT2Inode *out_inode);
+
 /**
  * @brief create a new directory using given node
  * first item of directory table is its node location (name will be .)

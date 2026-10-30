@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "header/memory/paging.h"
+#include "header/memory/swap.h"
 #include "header/stdlib/string.h"
 
 /**
@@ -152,8 +153,13 @@ bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_a
         return false;
 
     struct PageTableEntry *entry = &page_table->table[(vaddr >> 12) & 0x3FF];
-    if (!entry->flag.present_bit)
-        return false;
+    if (!entry->flag.present_bit) {
+        if (entry->ignored != SWAP_PTE_MARKER)
+            return false;
+        swap_release_slot(entry->physical_page_base_address);
+        memset(entry, 0, sizeof(struct PageTableEntry));
+        return true;
+    }
 
     uint32_t frame = entry->physical_page_base_address;
     if (frame >= KERNEL_RESERVED_PAGE_FRAME_COUNT && frame < PAGE_FRAME_MAX_COUNT &&
