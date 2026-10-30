@@ -3,7 +3,10 @@
 #include "header/cpu/idt.h"
 #include "header/driver/keyboard.h"
 #include "header/filesystem/ext2.h"
+#include "header/memory/swap.h"
 #include "header/text/framebuffer.h"
+
+#define INTERRUPT_PAGE_FAULT 0xE
 
 void io_wait(void) {
     out(0x80, 0);
@@ -84,6 +87,20 @@ void syscall(struct InterruptFrame frame) {
         case 7:
             keyboard_state_activate();
             break;
+        case 8:
+            framebuffer_clear();
+            framebuffer_set_cursor(0, 0);
+            break;
+        case 9: {
+            struct EXT2Inode node;
+            node.i_size = 0;
+            read_inode(frame.cpu.general.ebx, &node);
+            *((uint32_t *) frame.cpu.general.ecx) = node.i_size;
+            break;
+        }
+        case 10:
+            *((uint32_t *) frame.cpu.general.ebx) = PAGE_FRAME_ON_SWAP_MAX_COUNT - swap_manager.free_count;
+            break;
         default:
             break;
     }
@@ -93,6 +110,9 @@ void main_interrupt_handler(struct InterruptFrame frame) {
    switch (frame.int_number){
         case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
+            break;
+        case INTERRUPT_PAGE_FAULT:
+            handle_page_fault(frame.int_stack.error_code);
             break;
         case SYSCALL_INTERRUPT_NUMBER:
             syscall(frame);

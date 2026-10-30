@@ -17,8 +17,39 @@ const char keyboard_scancode_1_to_ascii_map[256] = {
 static struct KeyboardDriverState keyboard_state = {
     .read_extended_mode = false,
     .keyboard_input_on  = false,
-    .keyboard_buffer    = 0
+    .keyboard_buffer    = 0,
+    .shift_pressed      = false
 };
+
+static char apply_shift(char ascii) {
+    if (ascii >= 'a' && ascii <= 'z')
+        return ascii - 'a' + 'A';
+
+    switch (ascii) {
+        case '1':  return '!';
+        case '2':  return '@';
+        case '3':  return '#';
+        case '4':  return '$';
+        case '5':  return '%';
+        case '6':  return '^';
+        case '7':  return '&';
+        case '8':  return '*';
+        case '9':  return '(';
+        case '0':  return ')';
+        case '-':  return '_';
+        case '=':  return '+';
+        case '[':  return '{';
+        case ']':  return '}';
+        case ';':  return ':';
+        case '\'': return '"';
+        case '`':  return '~';
+        case '\\': return '|';
+        case ',':  return '<';
+        case '.':  return '>';
+        case '/':  return '?';
+        default:   return ascii;
+    }
+}
 
 void keyboard_state_activate(void) {
     keyboard_state.keyboard_input_on = true;
@@ -80,10 +111,13 @@ void keyboard_isr(void) {
             }
             keyboard_state.read_extended_mode = false;
         } else {
-            if (!(scancode & 0x80)) {
+            uint8_t key = scancode & ~SCANCODE_RELEASE_BIT;
+            if (key == SCANCODE_LEFT_SHIFT || key == SCANCODE_RIGHT_SHIFT) {
+                keyboard_state.shift_pressed = !(scancode & SCANCODE_RELEASE_BIT);
+            } else if (!(scancode & SCANCODE_RELEASE_BIT)) {
                 char ascii = keyboard_scancode_1_to_ascii_map[scancode];
                 if (ascii != 0) {
-                    keyboard_state.keyboard_buffer = ascii;
+                    keyboard_state.keyboard_buffer = keyboard_state.shift_pressed ? apply_shift(ascii) : ascii;
                 }
             }
         }

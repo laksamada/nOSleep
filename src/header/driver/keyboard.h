@@ -13,6 +13,9 @@
 
 #define KEYBOARD_DATA_PORT     0x60
 #define EXTENDED_SCANCODE_BYTE 0xE0
+#define SCANCODE_LEFT_SHIFT    0x2A
+#define SCANCODE_RIGHT_SHIFT   0x36
+#define SCANCODE_RELEASE_BIT   0x80
 
 /**
  * keyboard_scancode_1_to_ascii_map[256], Convert scancode values that correspond to ASCII printables
@@ -33,6 +36,7 @@ struct KeyboardDriverState {
     bool read_extended_mode;
     bool keyboard_input_on;
     char keyboard_buffer;
+    bool shift_pressed;
 } __attribute((packed));
 
 
