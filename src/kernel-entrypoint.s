@@ -1,6 +1,7 @@
 global loader                        ; the entry symbol for ELF
 global load_gdt                      ; load GDT table
 global set_tss_register              ; set tss register to GDT entry
+global kernel_execute_user_program   ; execute initial user program from kernel
 extern kernel_setup                  ; kernel C entrypoint
 extern _paging_kernel_page_directory ; kernel page directory
 extern _paging_kernel_page_table     ; kernel page table
@@ -108,3 +109,26 @@ set_tss_register:
     mov ax, 0x28 | 0 ; GDT TSS Selector, ring 0
     ltr ax
     ret
+
+
+kernel_execute_user_program:
+    mov  eax, 0x20 | 0x3
+    mov  ds, ax
+    mov  es, ax
+    mov  fs, ax
+    mov  gs, ax
+
+    ; Using iret (return instruction for interrupt) technique for privilege change
+    ; Stack values will be loaded into these register:
+    ; [esp] -> eip, [esp+4] -> cs, [esp+8] -> eflags, [] -> user esp, [] -> user ss
+    mov  ecx, [esp+4] ; Save first (before pushing anything to stack) for last push
+    push eax ; Stack segment selector (GDT_USER_DATA_SELECTOR), user privilege
+    mov  eax, ecx
+    add  eax, 0x400000 - 4
+    push eax ; User space stack pointer (esp), move it into last 4 MiB
+    pushf    ; eflags register state, when jump inside user program
+    mov  eax, 0x18 | 0x3
+    push eax ; Code segment selector (GDT_USER_CODE_SELECTOR), user privilege
+    mov  eax, ecx
+    push eax ; eip register to jump back
+    iret

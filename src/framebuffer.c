@@ -79,3 +79,8 @@ void framebuffer_putchar(char c, uint8_t fg, uint8_t bg) {
 
     framebuffer_set_cursor(cursor_row, cursor_col);
 }
+
+void puts(const char *str, uint32_t count, uint32_t color) {
+    for (uint32_t i = 0; i < count; i++)
+        framebuffer_putchar(str[i], (uint8_t) color, 0);
+}

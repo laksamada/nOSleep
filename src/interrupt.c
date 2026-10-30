@@ -1,6 +1,9 @@
 #include "header/cpu/portio.h"
 #include "header/cpu/interrupt.h"
+#include "header/cpu/idt.h"
 #include "header/driver/keyboard.h"
+#include "header/filesystem/ext2.h"
+#include "header/text/framebuffer.h"
 
 void io_wait(void) {
     out(0x80, 0);
@@ -43,10 +46,56 @@ void pic_remap(void) {
     out(PIC2_DATA, PIC_DISABLE_ALL_MASK);
 }
 
+void syscall(struct InterruptFrame frame) {
+    switch (frame.cpu.general.eax) {
+        case 0:
+            *((int8_t *) frame.cpu.general.ecx) = read(
+                *(struct EXT2DriverRequest *) frame.cpu.general.ebx
+            );
+            break;
+        case 1:
+            *((int8_t *) frame.cpu.general.ecx) = read_directory(
+                (struct EXT2DriverRequest *) frame.cpu.general.ebx
+            );
+            break;
+        case 2:
+            *((int8_t *) frame.cpu.general.ecx) = write(
+                (struct EXT2DriverRequest *) frame.cpu.general.ebx
+            );
+            break;
+        case 3:
+            *((int8_t *) frame.cpu.general.ecx) = delete(
+                *(struct EXT2DriverRequest *) frame.cpu.general.ebx
+            );
+            break;
+        case 4:
+            get_keyboard_buffer((char *) frame.cpu.general.ebx);
+            break;
+        case 5:
+            framebuffer_putchar((char) frame.cpu.general.ebx, (uint8_t) frame.cpu.general.ecx, 0);
+            break;
+        case 6:
+            puts(
+                (char *) frame.cpu.general.ebx,
+                frame.cpu.general.ecx,
+                frame.cpu.general.edx
+            );
+            break;
+        case 7:
+            keyboard_state_activate();
+            break;
+        default:
+            break;
+    }
+}
+
 void main_interrupt_handler(struct InterruptFrame frame) {
    switch (frame.int_number){
-        case PIC1_OFFSET + IRQ_KEYBOARD: 
+        case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
+            break;
+        case SYSCALL_INTERRUPT_NUMBER:
+            syscall(frame);
             break;
         default:
             break;
