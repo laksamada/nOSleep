@@ -115,6 +115,44 @@ void syscall(struct InterruptFrame frame) {
         case 10:
             *((uint32_t *) frame.cpu.general.ebx) = PAGE_FRAME_ON_SWAP_MAX_COUNT - swap_manager.free_count;
             break;
+        case 11: { // exit
+            // ebx: exit code (opsional jika disimpan/dicetak)
+            struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+            if (current_pcb != NULL) {
+                process_destroy(current_pcb->metadata.pid);
+            }
+            // Panggil scheduler agar langsung pindah ke proses lain (tidak return ke proses mati)
+            scheduler_switch_to_next_process();
+            break;
+        }
+        case 12: // create process (exec)
+            // ebx: struct EXT2DriverRequest* request
+            // ecx: int32_t* return_code (PID baru atau kode error)
+            *((int32_t *) frame.cpu.general.ecx) = process_create_user_process(
+                *(struct EXT2DriverRequest *) frame.cpu.general.ebx
+            );
+            break;
+        case 13: // terminate by PID (kill)
+            // ebx: uint32_t pid
+            // ecx: bool* return_code (true jika berhasil, false jika PID tidak ditemukan)
+            *((bool *) frame.cpu.general.ecx) = process_destroy(
+                frame.cpu.general.ebx
+            );
+            break;
+        case 14: // get process info (ps)
+            // ebx: struct ProcessInfo* buffer (atau PCB metadata buffer)
+            // ecx: uint32_t* count (jumlah proses aktif yang disalin)
+            process_get_all_info(
+                (struct ProcessInfo *) frame.cpu.general.ebx,
+                (uint32_t *) frame.cpu.general.ecx
+            );
+            break;
+        case 15: // get CMOS time (clock)
+            // ebx: struct CMOSTime* time_buffer
+            cmos_get_time(
+                (struct CMOSTime *) frame.cpu.general.ebx
+            );
+            break;    
         default:
             break;
     }
