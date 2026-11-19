@@ -6,11 +6,16 @@
 #include "header/cpu/interrupt.h"
 #include "header/cpu/idt.h"
 #include "header/driver/keyboard.h"
+#include "header/driver/mouse.h"
+#include "header/driver/graphics.h"
 #include "header/driver/disk.h"
 #include "header/filesystem/ext2.h"
+#include "header/filesystem/bootfile.h"
 #include "header/memory/paging.h"
+#include "header/process/process.h"
+#include "header/scheduler/scheduler.h"
 
-void kernel_setup(void) {
+void kernel_setup(uint32_t multiboot_info) {
     load_gdt(&_gdt_gdtr);
     pic_remap();
     initialize_idt();
@@ -21,26 +26,24 @@ void kernel_setup(void) {
     gdt_install_tss();
     set_tss_register();
 
-    // Allocate first 4 MiB virtual memory
-    paging_allocate_user_page_frame(&_paging_kernel_page_directory, (uint8_t *) 0);
+    bootfile_init(multiboot_info);
+    graphics_init();
+    mouse_init();
 
-    // Write shell into memory
     struct EXT2DriverRequest request = {
         .buf          = (uint8_t *) 0,
         .name         = "shell",
-        .parent_inode = 2,
-        .buffer_size  = 0x100000,
+        .parent_inode = 1,
+        .buffer_size  = PROCESS_IMAGE_SIZE_MAX,
         .name_len     = 5,
     };
-
-    if (read(request) != 0) {
-        puts("shell tidak ditemukan, jalankan make disk dan make insert-shell\n", 64, 0xC);
+    uint32_t pid;
+    if (process_create_user_process(request, &pid) != PROCESS_CREATE_SUCCESS) {
+        puts("shell not found, run make disk and make insert-shell\n", 53, 0xC);
         while (true);
     }
 
-    // Set TSS $esp pointer and jump into shell 
     set_tss_kernel_current_stack();
-    kernel_execute_user_program((uint8_t *) 0);
-
-    while (true);
+    scheduler_init();
+    scheduler_switch_to_next_process();
 }

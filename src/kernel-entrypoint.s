@@ -9,8 +9,8 @@ extern _paging_kernel_page_table     ; kernel page table
 KERNEL_VIRTUAL_BASE equ 0xC0000000    ; kernel virtual memory
 KERNEL_STACK_SIZE   equ 2097152       ; size of stack in bytes
 MAGIC_NUMBER        equ 0x1BADB002    ; define the magic number constant
-FLAGS               equ 0x0           ; multiboot flags
-CHECKSUM            equ -MAGIC_NUMBER ; calculate the checksum (magic number + checksum + flags == 0)
+FLAGS               equ 0x1           ; multiboot flags, bit 0: modul GRUB di-align ke 4 KiB
+CHECKSUM            equ -(MAGIC_NUMBER + FLAGS) ; magic number + checksum + flags == 0
 
 
 section .bss
@@ -75,6 +75,7 @@ loader_virtual:
     mov dword [_paging_kernel_page_directory], 0
     invlpg [0]                                ; Delete identity mapping and invalidate TLB cache for first page
     mov esp, kernel_stack + KERNEL_STACK_SIZE ; Setup stack register to proper location
+    push ebx                                  ; Alamat fisik multiboot info dari GRUB
     call kernel_setup
 .loop:
     jmp .loop                                 ; loop forever

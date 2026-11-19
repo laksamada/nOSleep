@@ -615,6 +615,22 @@ void sync_node(struct EXT2Inode *node, uint32_t inode) {
     }
 }
 
+static bool directory_has_space(uint8_t *block, uint32_t directory_size, uint16_t required_rec_len) {
+    uint32_t offset = 0;
+    while (offset < BLOCK_SIZE && offset < directory_size) {
+        struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)(block + offset);
+        uint16_t actual_len = get_entry_record_len(entry->name_len);
+        if (entry->rec_len < actual_len || entry->rec_len > BLOCK_SIZE - offset) {
+            return false;
+        }
+        if (entry->rec_len - actual_len >= required_rec_len) {
+            return true;
+        }
+        offset += entry->rec_len;
+    }
+    return false;
+}
+
 int8_t write(struct EXT2DriverRequest *request) {
     // 1. Validasi pointer dasar & nama (return -1 jika invalid)
     if (request == NULL || request->name == NULL || request->name_len == 0 ||
@@ -656,6 +672,13 @@ int8_t write(struct EXT2DriverRequest *request) {
         return -1;
     }
 
+    uint8_t parent_buf[BLOCK_SIZE];
+    read_inode_content(&parent_node, parent_buf, BLOCK_SIZE);
+    uint16_t required_rec_len = get_entry_record_len(request->name_len);
+    if (!directory_has_space(parent_buf, parent_node.i_size, required_rec_len)) {
+        return -1;
+    }
+
     uint32_t new_inode_num = allocate_node();
     if (new_inode_num == 0) {
         return -1;
@@ -689,11 +712,6 @@ int8_t write(struct EXT2DriverRequest *request) {
     }
 
     sync_node(&new_node, new_inode_num);
-
-    uint8_t parent_buf[BLOCK_SIZE];
-    read_inode_content(&parent_node, parent_buf, BLOCK_SIZE);
-
-    uint16_t required_rec_len = get_entry_record_len(request->name_len);
 
     struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)parent_buf;
     uint32_t offset = 0;

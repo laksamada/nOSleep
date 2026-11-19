@@ -9,6 +9,10 @@
 #define CURSOR_PORT_CMD    0x03D4
 #define CURSOR_PORT_DATA   0x03D5
 
+// Baris 0-23 untuk teks shell (bisa scroll), baris 24 untuk status seperti jam
+#define FRAMEBUFFER_TEXT_ROWS   24
+#define FRAMEBUFFER_STATUS_ROW  24
+
 /**
  * Terminal framebuffer
  * Resolution: 80x25

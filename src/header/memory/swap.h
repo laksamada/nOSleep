@@ -9,7 +9,7 @@
 #define SWAP_BLOCKS_PER_PAGE         8
 #define SWAP_START_BLOCK             (8192u - PAGE_FRAME_ON_SWAP_MAX_COUNT * SWAP_BLOCKS_PER_PAGE)
 #define SWAP_PTE_MARKER              0b001
-#define USER_PROGRAM_MEMORY_LIMIT    0x400000u
+#define USER_PROGRAM_MEMORY_LIMIT    0x4000000u
 
 struct SwapManager {
     bool     swap_used[PAGE_FRAME_ON_SWAP_MAX_COUNT];
@@ -43,7 +43,8 @@ uint32_t read_cr2(void);
  * handle page fault
  * @param error_code error code read from cpu state
  * make sure to handle every cases including page replacement
+ * @return false jika fault berasal dari program user dan tidak bisa ditangani
  */
-void handle_page_fault(uint32_t error_code);
+bool handle_page_fault(uint32_t error_code);
 
 #endif

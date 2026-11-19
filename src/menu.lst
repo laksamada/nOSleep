@@ -3,3 +3,5 @@ timeout 0
 
 title os
 kernel /boot/kernel
+module /boot/doom
+module /boot/doom1.wad

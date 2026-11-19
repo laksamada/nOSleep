@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "header/cpu/interrupt.h"
+#include "header/process/syscall.h"
 
 #define EXT_SCANCODE_UP        0x48
 #define EXT_SCANCODE_DOWN      0x50
@@ -16,6 +17,7 @@
 #define SCANCODE_LEFT_SHIFT    0x2A
 #define SCANCODE_RIGHT_SHIFT   0x36
 #define SCANCODE_RELEASE_BIT   0x80
+#define KEYBOARD_EVENT_QUEUE_SIZE 64
 
 /**
  * keyboard_scancode_1_to_ascii_map[256], Convert scancode values that correspond to ASCII printables
@@ -53,6 +55,9 @@ void keyboard_state_deactivate(void);
 
 // Get keyboard buffer value and flush the buffer - @param buf Pointer to char buffer
 void get_keyboard_buffer(char *buf);
+
+// Ambil satu event tombol (scancode, KEY_EVENT_EXTENDED, KEY_EVENT_RELEASED), false jika antrean kosong
+bool keyboard_get_event(uint16_t *event);
 
 /* -- Keyboard Interrupt Service Routine -- */
 

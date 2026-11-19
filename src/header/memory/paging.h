@@ -28,6 +28,10 @@
  
 // Maximum usable page frame. Default count: 128 MiB / 4 KiB = 32768 frames
 #define PAGE_FRAME_MAX_COUNT ((SYSTEM_MEMORY_MB << 20) / PAGE_FRAME_SIZE)
+
+#define PAGING_DIRECTORY_TABLE_MAX_COUNT 32
+#define KERNEL_PAGE_DIRECTORY_INDEX (KERNEL_VIRTUAL_ADDRESS_BASE >> 22)
+#define PAGE_4MB_SIZE 0x400000u
  
 // kernel's  page directory, using 4 KiB pages
 extern struct PageDirectory _paging_kernel_page_directory;
@@ -239,5 +243,23 @@ bool paging_allocate_user_page_frame(struct PageDirectory *page_dir, void *virtu
  * @return              Will return true if success, false otherwise
  */
 bool paging_free_user_page_frame(struct PageDirectory *page_dir, void *virtual_addr);
+
+// Ambil page directory kosong dari page_directory_list, berisi mapping kernel dan recursive mapping
+struct PageDirectory* paging_create_new_page_directory(void);
+
+// Bebaskan seluruh frame user, slot swap, dan page table milik page directory, lalu tandai kosong
+bool paging_free_page_directory(struct PageDirectory *page_dir);
+
+// Ganti CR3 ke page directory (alamat virtual higher half)
+void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr);
+
+// Hitung frame fisik yang sedang dipakai page directory (termasuk page table)
+uint32_t paging_count_user_frames(struct PageDirectory *page_dir);
+
+// Map memori fisik ke ruang kernel memakai halaman 4 MiB, berlaku untuk page directory baru
+void paging_map_kernel_window(uint32_t virtual_addr, uint32_t physical_addr, uint32_t size);
+
+// Tandai frame fisik sebagai terpakai agar tidak dialokasikan ke proses
+void paging_reserve_physical_range(uint32_t physical_addr, uint32_t size);
  
 #endif
