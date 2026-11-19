@@ -70,12 +70,11 @@ void framebuffer_putchar(char c, uint8_t fg, uint8_t bg) {
         }
     }
 
-    // Scroll sederhana jika melebihi baris 24
-    if (cursor_row >= 25) {
-        memmove(FRAMEBUFFER_MEMORY_OFFSET, FRAMEBUFFER_MEMORY_OFFSET + 80 * 2, 80 * 24 * 2);
+    if (cursor_row >= FRAMEBUFFER_TEXT_ROWS) {
+        memmove(FRAMEBUFFER_MEMORY_OFFSET, FRAMEBUFFER_MEMORY_OFFSET + 80 * 2, 80 * (FRAMEBUFFER_TEXT_ROWS - 1) * 2);
         for (uint8_t col = 0; col < 80; col++)
-            framebuffer_write(24, col, 0x00, 0x07, 0x00);
-        cursor_row = 24;
+            framebuffer_write(FRAMEBUFFER_TEXT_ROWS - 1, col, 0x00, 0x07, 0x00);
+        cursor_row = FRAMEBUFFER_TEXT_ROWS - 1;
     }
 
     framebuffer_set_cursor(cursor_row, cursor_col);

@@ -125,32 +125,38 @@ static void print_text(const char *text) {
         framebuffer_putchar(*text++, 0xC, 0);
 }
 
-static void page_fault_panic(const char *reason, uint32_t fault_address, uint32_t error_code) {
-    print_text("\nPAGE FAULT: ");
+static bool page_fault_fail(const char *reason, uint32_t fault_address, uint32_t error_code) {
+    bool from_user = error_code & 0x4;
+    print_text(from_user ? "\nprogram killed, page fault: " : "\nPAGE FAULT: ");
     print_text(reason);
     print_text("\naddress ");
     print_hex(fault_address);
     print_text(" error ");
     print_hex(error_code);
+    if (from_user) {
+        print_text("\n");
+        return false;
+    }
     while (true)
         __asm__ volatile("cli; hlt");
 }
 
-void handle_page_fault(uint32_t error_code) {
+bool handle_page_fault(uint32_t error_code) {
     uint32_t fault_address = read_cr2();
     struct PageDirectory *page_dir = paging_get_current_page_directory_addr();
 
     if (error_code & 0x1)
-        page_fault_panic("protection violation", fault_address, error_code);
+        return page_fault_fail("protection violation", fault_address, error_code);
     if (fault_address >= USER_PROGRAM_MEMORY_LIMIT)
-        page_fault_panic("address outside user program", fault_address, error_code);
+        return page_fault_fail("address outside user program", fault_address, error_code);
 
     while (page_manager_state.free_page_frame_count < 2)
         if (!evict_page(page_dir))
-            page_fault_panic("out of memory and swap", fault_address, error_code);
+            return page_fault_fail("out of memory and swap", fault_address, error_code);
 
     if (swap_in(page_dir, (void *) fault_address))
-        return;
+        return true;
     if (!paging_allocate_user_page_frame(page_dir, (void *) fault_address))
-        page_fault_panic("cannot allocate page frame", fault_address, error_code);
+        return page_fault_fail("cannot allocate page frame", fault_address, error_code);
+    return true;
 }

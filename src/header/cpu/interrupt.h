@@ -141,7 +141,6 @@ struct TSSEntry {
 // Set kernel stack in TSS
 void set_tss_kernel_current_stack(void);
 
-
 void syscall(struct InterruptFrame frame);
 
 // Activate PIC mask for keyboard only

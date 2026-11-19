@@ -47,9 +47,15 @@ STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffr
 CFLAGS        = $(ARCH_CFLAG) $(DEBUG_CFLAG) $(WARNING_CFLAG) $(STRIP_CFLAG) -c -I$(SOURCE_FOLDER)
 AFLAGS        = -f elf32 -g -F dwarf
 
+USER_PROGRAMS = clock
+QEMU_FLAGS    = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
+                -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+
 
 run: build
-	@qemu-system-i386 -s -S -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+	@qemu-system-i386 -s -S $(QEMU_FLAGS)
+run-nogdb: build
+	@qemu-system-i386 $(QEMU_FLAGS)
 build: iso
 clean:
 	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel
@@ -71,6 +77,10 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/keyboard.c -o $(OUTPUT_FOLDER)/keyboard.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/paging.c -o $(OUTPUT_FOLDER)/paging.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/swap.c -o $(OUTPUT_FOLDER)/swap.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/process.c -o $(OUTPUT_FOLDER)/process.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/scheduler.c -o $(OUTPUT_FOLDER)/scheduler.o
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/context-switch.s -o $(OUTPUT_FOLDER)/context-switch.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/cmos.c -o $(OUTPUT_FOLDER)/cmos.o
 
 	@echo Linking object files and generate elf32...
 	@$(LIN) $(LFLAGS) bin/*.o -o $(OUTPUT_FOLDER)/kernel
@@ -108,7 +118,20 @@ user-shell:
 	@size --target=binary $(OUTPUT_FOLDER)/shell
 	@rm -f *.o
 
-insert-shell: user-shell
-	@echo "Inserting shell binary into disk image..."
-	@python3 inserter.py output/shell disk.img
-	# @e2cp -p output/shell disk.img:/shell
+insert-shell: inserter user-shell
+	@echo Inserting shell into root directory...
+	@cd $(OUTPUT_FOLDER); ./inserter -f shell 1 $(DISK_NAME).bin
+
+user-programs:
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o crt0.o
+	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
+	@for program in $(USER_PROGRAMS); do \
+		$(CC) $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user/$$program.c -o $$program.o && \
+		$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=binary \
+			crt0.o $$program.o string.o -o $(OUTPUT_FOLDER)/$$program || exit 1; \
+		size --target=binary $(OUTPUT_FOLDER)/$$program; \
+	done
+	@rm -f *.o
+
+insert-programs: inserter user-programs
+	@cd $(OUTPUT_FOLDER); for program in $(USER_PROGRAMS); do ./inserter -f $$program 1 $(DISK_NAME).bin; done
