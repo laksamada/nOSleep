@@ -26,8 +26,9 @@
 #define COLOR_PROMPT 0x0B
 #define COLOR_WELCOME 0x0A
 
-#define PROGRAM_SIZE_MAX 0x200000u
-#define PROCESS_LIST_MAX 16
+#define PROGRAM_SIZE_MAX    0x200000u
+#define PROCESS_LIST_MAX    16
+#define FOREGROUND_GRACE_MS 100u
 
 static uint32_t current_dir_inode = ROOT_INODE;
 static char cwd_name[MAX_PATH_LEN] = "/";
@@ -42,13 +43,10 @@ static char find_path[MAX_PATH_LEN];
 static uint32_t find_count;
 
 void syscall(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {
-    __asm__ volatile("mov %0, %%ebx" : /* <Empty> */ : "r"(ebx));
-    __asm__ volatile("mov %0, %%ecx" : /* <Empty> */ : "r"(ecx));
-    __asm__ volatile("mov %0, %%edx" : /* <Empty> */ : "r"(edx));
-    __asm__ volatile("mov %0, %%eax" : /* <Empty> */ : "r"(eax));
-    // Note : gcc usually use %eax as intermediate register,
-    //        so it need to be the last one to mov
-    __asm__ volatile("int $0x30");
+    __asm__ volatile("int $0x30"
+        : "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx)
+        : /* <Empty> */
+        : "memory");
 }
 
 static uint32_t strlen(const char *str) {
@@ -90,6 +88,12 @@ static void sys_getchar(char *c) {
 
 static void sys_yield(void) {
     syscall(SYSCALL_YIELD, 0, 0, 0);
+}
+
+static uint32_t sys_get_ticks(void) {
+    uint32_t ticks = 0;
+    syscall(SYSCALL_GET_TICKS, (uint32_t) &ticks, 0, 0);
+    return ticks;
 }
 
 static void print_error(const char *prefix, const char *message, const char *name) {
@@ -672,23 +676,118 @@ static const char *exec_error_message(int32_t retcode) {
     }
 }
 
-static bool process_alive(uint32_t pid) {
-    bool alive = false;
-    syscall(SYSCALL_PROCESS_ALIVE, pid, (uint32_t) &alive, 0);
-    return alive;
+static void query_process(uint32_t pid, bool *alive, bool *interactive) {
+    *alive = false;
+    *interactive = false;
+    syscall(SYSCALL_PROCESS_ALIVE, pid, (uint32_t) alive, (uint32_t) interactive);
+}
+
+static bool parse_uint_strict(const char *str, uint32_t *out) {
+    if (str == NULL || *str == '\0')
+        return false;
+    uint32_t value = 0;
+    while (*str != '\0') {
+        if (*str < '0' || *str > '9')
+            return false;
+        value = value * 10 + (*str++ - '0');
+    }
+    *out = value;
+    return true;
+}
+
+static bool resolve_program_path(const char *path, uint32_t *parent_inode, char *basename, bool *has_slash) {
+    if (path == NULL || path[0] == '\0')
+        return false;
+
+    uint32_t len = strlen(path);
+    bool contains_slash = false;
+    for (uint32_t i = 0; i < len; i++) {
+        if (path[i] == '/') {
+            contains_slash = true;
+            break;
+        }
+    }
+
+    if (!contains_slash) {
+        if (strcmp(path, ".") == 0 || strcmp(path, "..") == 0 || len >= MAX_NAME_LEN)
+            return false;
+        *has_slash = false;
+        *parent_inode = current_dir_inode;
+        strcpy(basename, path);
+        return true;
+    }
+
+    *has_slash = true;
+    if (path[len - 1] == '/')
+        return false;
+
+    uint32_t dir = (path[0] == '/') ? ROOT_INODE : current_dir_inode;
+    const char *p = path;
+    while (*p != '\0') {
+        while (*p == '/')
+            p++;
+        if (*p == '\0')
+            return false;
+
+        char seg[MAX_NAME_LEN];
+        uint32_t seg_len = 0;
+        while (p[seg_len] != '\0' && p[seg_len] != '/') {
+            if (seg_len + 1 >= MAX_NAME_LEN)
+                return false;
+            seg[seg_len] = p[seg_len];
+            seg_len++;
+        }
+        seg[seg_len] = '\0';
+        p += seg_len;
+
+        if (*p == '\0') {
+            if (strcmp(seg, ".") == 0 || strcmp(seg, "..") == 0)
+                return false;
+            strcpy(basename, seg);
+            *parent_inode = dir;
+            return true;
+        }
+
+        if (strcmp(seg, ".") == 0)
+            continue;
+
+        uint32_t next_inode;
+        uint8_t file_type;
+        if (!find_entry(dir, seg, &next_inode, &file_type) || file_type != EXT2_FT_DIR)
+            return false;
+        dir = next_inode;
+    }
+    return false;
 }
 
 static bool run_program(const char *name, bool background, bool as_command) {
+    uint32_t parent_inode = current_dir_inode;
+    char prog_name[MAX_NAME_LEN];
+    bool has_slash = false;
+
+    if (!resolve_program_path(name, &parent_inode, prog_name, &has_slash)) {
+        if (as_command)
+            print_error("shell", "command not found:", name);
+        else
+            print_error("exec", "program not found:", name);
+        return false;
+    }
+
     struct EXT2DriverRequest request = {
         .buf          = (uint8_t *) 0,
-        .name         = (char *) name,
-        .name_len     = strlen(name),
-        .parent_inode = current_dir_inode,
+        .name         = prog_name,
+        .name_len     = strlen(prog_name),
+        .parent_inode = parent_inode,
         .buffer_size  = PROGRAM_SIZE_MAX,
     };
     int32_t retcode = -1;
     uint32_t pid = 0;
     syscall(SYSCALL_EXEC, (uint32_t) &request, (uint32_t) &retcode, (uint32_t) &pid);
+    if (retcode == 4 && !has_slash && parent_inode != ROOT_INODE) {
+        request.parent_inode = ROOT_INODE;
+        syscall(SYSCALL_EXEC, (uint32_t) &request, (uint32_t) &retcode, (uint32_t) &pid);
+    }
+
     if (retcode != 0) {
         if (as_command && retcode == 4)
             print_error("shell", "command not found:", name);
@@ -697,19 +796,27 @@ static bool run_program(const char *name, bool background, bool as_command) {
         return false;
     }
 
-    if (background) {
-        char pid_text[12];
-        uint_to_string(pid, pid_text);
-        out_str("[");
-        out_str(pid_text);
-        out_str("] ");
-        out_str(name);
-        out_str(" running in background\n");
-        return true;
+    if (!background) {
+        uint32_t start = sys_get_ticks();
+        bool alive = false;
+        bool interactive = false;
+        while (true) {
+            query_process(pid, &alive, &interactive);
+            if (!alive)
+                return true;
+            if (!interactive && sys_get_ticks() - start >= FOREGROUND_GRACE_MS)
+                break;
+            sys_yield();
+        }
     }
 
-    while (process_alive(pid))
-        sys_yield();
+    char pid_text[12];
+    uint_to_string(pid, pid_text);
+    out_str("[");
+    out_str(pid_text);
+    out_str("] ");
+    out_str(prog_name);
+    out_str(" running in background\n");
     return true;
 }
 
@@ -734,7 +841,11 @@ static bool cmd_ps(void) {
 }
 
 static bool cmd_kill(const char *pid_text) {
-    uint32_t pid = parse_uint(pid_text);
+    uint32_t pid = 0;
+    if (!parse_uint_strict(pid_text, &pid)) {
+        print_error("kill", "invalid PID:", pid_text);
+        return false;
+    }
     int32_t result = -1;
     syscall(SYSCALL_KILL, pid, (uint32_t) &result, 0);
 
@@ -752,6 +863,27 @@ static bool cmd_kill(const char *pid_text) {
     return true;
 }
 
+static bool cmd_exit(void) {
+    struct ProcessInfo list[PROCESS_LIST_MAX];
+    uint32_t count = 0;
+    syscall(SYSCALL_PS, (uint32_t) list, PROCESS_LIST_MAX, (uint32_t) &count);
+
+    uint32_t current_pid = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (list[i].state == 2) {
+            current_pid = list[i].pid;
+            break;
+        }
+    }
+    if (current_pid <= 1) {
+        print_error("exit", "shell (PID 1) cannot exit", NULL);
+        return false;
+    }
+
+    syscall(SYSCALL_EXIT, 0, 0, 0);
+    return true;
+}
+
 static bool cmd_help(void) {
     out_str("cd <dir>           change directory (.. up, / root)\n");
     out_str("ls                 list current directory\n");
@@ -765,10 +897,11 @@ static bool cmd_help(void) {
     out_str("echo <text>        print text\n");
     out_str("clear              clear screen\n");
     out_str("memtest [n]        test memory and swap\n");
-    out_str("exec <prog> [&]    run program, & for background\n");
-    out_str("<prog> [&]         same as exec, e.g. clock &\n");
+    out_str("exec <prog> [&]    run program (supports paths), & for background\n");
+    out_str("<prog> [&]         same as exec, e.g. hello, clock\n");
     out_str("ps                 list processes\n");
     out_str("kill <pid>         stop a process\n");
+    out_str("exit               exit sub-shell (PID 1 protected)\n");
     out_str("Pipeline: ls | grep a    Write file: echo hello > a.txt\n");
     return true;
 }
@@ -810,6 +943,8 @@ static bool execute_command(int argc, char *argv[]) {
         if (argc > 1)
             return cmd_kill(argv[1]);
         print_usage("kill <pid>");
+    } else if (strcmp(command, "exit") == 0) {
+        return cmd_exit();
     } else if (strcmp(command, "cd") == 0) {
         if (argc > 1)
             return cmd_cd(argv[1]);
