@@ -66,11 +66,36 @@ void pic_remap(void) {
     out(PIC2_DATA, PIC_DISABLE_ALL_MASK);
 }
 
+static struct {
+    uint32_t owner_pid;
+    uint8_t  col;
+    uint8_t  len;
+} status_row_owner;
+
+static void clear_status_row_if_owned(uint32_t pid) {
+    if (status_row_owner.owner_pid != 0 && status_row_owner.owner_pid == pid) {
+        for (uint8_t i = 0; i < status_row_owner.len && status_row_owner.col + i < 80; i++)
+            framebuffer_write(FRAMEBUFFER_STATUS_ROW, status_row_owner.col + i, ' ', 0x07, 0x00);
+        status_row_owner.owner_pid = 0;
+        status_row_owner.col = 0;
+        status_row_owner.len = 0;
+    }
+}
+
 __attribute__((noreturn)) static void terminate_current_process(void) {
     struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
-    if (current != NULL)
-        process_destroy(current->metadata.pid);
+    if (current != NULL) {
+        uint32_t pid = current->metadata.pid;
+        clear_status_row_if_owned(pid);
+        process_destroy(pid);
+    }
     scheduler_switch_to_next_process();
+}
+
+static void mark_current_uses_keyboard(void) {
+    struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
+    if (current != NULL)
+        current->metadata.uses_keyboard = true;
 }
 
 static void syscall_kill(uint32_t pid, int32_t *result) {
@@ -84,6 +109,7 @@ static void syscall_kill(uint32_t pid, int32_t *result) {
         if (current != NULL && current->metadata.pid == pid)
             terminate_current_process();
         process_destroy(pid);
+        clear_status_row_if_owned(pid);
     }
 }
 
@@ -106,6 +132,7 @@ void syscall(struct InterruptFrame frame) {
             *((int8_t *) ecx) = delete(*(struct EXT2DriverRequest *) ebx);
             break;
         case SYSCALL_GETCHAR:
+            mark_current_uses_keyboard();
             get_keyboard_buffer((char *) ebx);
             break;
         case SYSCALL_PUTCHAR:
@@ -115,6 +142,7 @@ void syscall(struct InterruptFrame frame) {
             puts((char *) ebx, ecx, edx);
             break;
         case SYSCALL_KEYBOARD_ON:
+            mark_current_uses_keyboard();
             keyboard_state_activate();
             break;
         case SYSCALL_CLEAR_SCREEN:
@@ -151,8 +179,21 @@ void syscall(struct InterruptFrame frame) {
         case SYSCALL_WRITE_AT: {
             const char *text = (const char *) ebx;
             uint8_t row = ecx >> 8, col = ecx & 0xFF;
-            for (uint32_t i = 0; text[i] != '\0' && col + i < 80; i++)
+            if (row >= 25 || col >= 80)
+                break;
+            uint32_t written = 0;
+            for (uint32_t i = 0; text[i] != '\0' && col + i < 80; i++) {
                 framebuffer_write(row, col + i, text[i], edx & 0xF, (edx >> 4) & 0xF);
+                written++;
+            }
+            if (row == FRAMEBUFFER_STATUS_ROW && written > 0) {
+                struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
+                if (current != NULL) {
+                    status_row_owner.owner_pid = current->metadata.pid;
+                    status_row_owner.col = col;
+                    status_row_owner.len = (uint8_t) written;
+                }
+            }
             break;
         }
         case SYSCALL_YIELD:
@@ -160,9 +201,13 @@ void syscall(struct InterruptFrame frame) {
         case SYSCALL_GET_TICKS:
             *((uint32_t *) ebx) = scheduler_get_ticks();
             break;
-        case SYSCALL_PROCESS_ALIVE:
-            *((bool *) ecx) = process_find(ebx) != NULL;
+        case SYSCALL_PROCESS_ALIVE: {
+            struct ProcessControlBlock *pcb = process_find(ebx);
+            *((bool *) ecx) = pcb != NULL;
+            if (edx != 0)
+                *((bool *) edx) = pcb != NULL && pcb->metadata.uses_keyboard;
             break;
+        }
         default:
             break;
     }
