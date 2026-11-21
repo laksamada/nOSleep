@@ -51,6 +51,7 @@ struct ProcessControlBlock {
         uint32_t          pid;
         char              name[PROCESS_NAME_LENGTH_MAX];
         enum ProcessState state;
+        bool              uses_keyboard;
     } metadata;
 
     struct Context context;
