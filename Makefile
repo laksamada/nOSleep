@@ -28,6 +28,11 @@ ifeq ($(UNAME_S), Darwin)
                    -mno-avx \
                    -Qunused-arguments 
     LFLAGS      := -T $(SOURCE_FOLDER)/linker.ld -m elf_i386
+    HOST_CC          := cc
+    HOST_CFLAGS      :=
+    USER_LFLAGS      := -T $(SOURCE_FOLDER)/user-linker.ld -m elf_i386
+    USER_ELF_OFORMAT :=
+    PRINT_SIZE       := stat -f "size: %z bytes (%N)"
 else
     # Linux/ WSL
     CC          := gcc
@@ -36,6 +41,11 @@ else
 
     ARCH_CFLAG  := -m32
     LFLAGS      := -T $(SOURCE_FOLDER)/linker.ld -melf_i386
+    HOST_CC          := gcc
+    HOST_CFLAGS      := -Wno-builtin-declaration-mismatch
+    USER_LFLAGS      := -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386
+    USER_ELF_OFORMAT := --oformat=elf32-i386
+    PRINT_SIZE       := size --target=binary
 endif
 
 
@@ -47,7 +57,7 @@ STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffr
 CFLAGS        = $(ARCH_CFLAG) $(DEBUG_CFLAG) $(WARNING_CFLAG) $(STRIP_CFLAG) -c -I$(SOURCE_FOLDER)
 AFLAGS        = -f elf32 -g -F dwarf
 
-USER_PROGRAMS = clock
+USER_PROGRAMS = clock hello
 QEMU_FLAGS    = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
                 -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 
@@ -96,7 +106,7 @@ iso: kernel
 	@rm -r $(OUTPUT_FOLDER)/iso/
 
 inserter:
-	@$(CC) -Wno-builtin-declaration-mismatch -g -I$(SOURCE_FOLDER) \
+	@$(HOST_CC) $(HOST_CFLAGS) -g -I$(SOURCE_FOLDER) \
 		$(SOURCE_FOLDER)/stdlib/string.c \
 		$(SOURCE_FOLDER)/ext2.c \
 		$(SOURCE_FOLDER)/external-inserter.c \
@@ -107,15 +117,15 @@ user-shell:
 	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user-shell.c -o user-shell.o
 	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
 	
-	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=binary \
+	@$(LIN) $(USER_LFLAGS) --oformat=binary \
 		crt0.o user-shell.o string.o -o $(OUTPUT_FOLDER)/shell
 	@echo Linking object shell object files and generate flat binary...
 
-	@$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=elf32-i386 \
+	@$(LIN) $(USER_LFLAGS) $(USER_ELF_OFORMAT) \
 		crt0.o user-shell.o string.o -o $(OUTPUT_FOLDER)/shell_elf
 	@echo Linking object shell object files and generate ELF32 for debugging...
 
-	@size --target=binary $(OUTPUT_FOLDER)/shell
+	@$(PRINT_SIZE) $(OUTPUT_FOLDER)/shell
 	@rm -f *.o
 
 insert-shell: inserter user-shell
@@ -127,9 +137,9 @@ user-programs:
 	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
 	@for program in $(USER_PROGRAMS); do \
 		$(CC) $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user/$$program.c -o $$program.o && \
-		$(LIN) -T $(SOURCE_FOLDER)/user-linker.ld -melf_i386 --oformat=binary \
+		$(LIN) $(USER_LFLAGS) --oformat=binary \
 			crt0.o $$program.o string.o -o $(OUTPUT_FOLDER)/$$program || exit 1; \
-		size --target=binary $(OUTPUT_FOLDER)/$$program; \
+		$(PRINT_SIZE) $(OUTPUT_FOLDER)/$$program; \
 	done
 	@rm -f *.o
 
