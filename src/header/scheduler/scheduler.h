@@ -10,7 +10,7 @@
  * @note          Implemented in assembly
  * @param context Target context to switch into
  */
-__attribute__((noreturn)) extern void process_context_switch(struct Context ctx);
+__attribute__((noreturn)) extern void process_context_switch(const struct Context *ctx);
 
 
 

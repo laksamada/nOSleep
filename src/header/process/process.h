@@ -13,7 +13,6 @@
 #define PROCESS_PAGE_FRAME_COUNT_MAX     8
 #define PROCESS_COUNT_MAX                16
 
-#define KERNEL_RESERVED_PAGE_FRAME_COUNT 4
 #define KERNEL_VIRTUAL_ADDRESS_BASE      0xC0000000
 
 #define CPU_EFLAGS_BASE_FLAG               0x2
@@ -74,6 +73,12 @@ struct ProcessControlBlock {
     } memory;
 };
 
+struct ProcessInfo {
+    uint32_t pid;
+    char name[PROCESS_NAME_LENGTH_MAX];
+    PROCESS_STATE state;
+};
+
 
 
 /**
@@ -82,6 +87,10 @@ struct ProcessControlBlock {
  * @return Will return NULL if there's no running process
  */
 struct ProcessControlBlock* process_get_current_running_pcb_pointer(void);
+struct ProcessControlBlock* process_get_slot(uint32_t slot);
+void process_set_current_running_pcb(struct ProcessControlBlock *pcb);
+void process_get_all_info(struct ProcessInfo *buffer, uint32_t *count);
+void process_reap_terminated(void);
 
 /**
  * Create new user process and setup the virtual address space.

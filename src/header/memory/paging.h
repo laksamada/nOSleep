@@ -16,6 +16,7 @@
  
 // Page Frame (PF) Size: 4 KiB
 #define PAGE_FRAME_SIZE      0x1000u
+#define KERNEL_DIRECT_MAP_TABLE_COUNT 32u // 128 MiB, including the first 4 MiB table
  
 // Ditulis persis sama dengan di process.h (ch4) supaya tidak bentrok saat di-include bersamaan
 #ifndef KERNEL_VIRTUAL_ADDRESS_BASE
@@ -153,6 +154,8 @@ struct PageDirectory {
 struct PageTable {
     struct PageTableEntry table[PAGE_ENTRY_COUNT];
 } __attribute__((packed));
+
+extern struct PageTable _paging_kernel_page_tables[KERNEL_DIRECT_MAP_TABLE_COUNT - 1];
  
 _Static_assert(sizeof(struct PageDirectory) == PAGE_FRAME_SIZE, "PD must be 4 KiB");
 _Static_assert(sizeof(struct PageTable) == PAGE_FRAME_SIZE, "PT must be 4 KiB");
@@ -189,7 +192,7 @@ void update_page_directory_entry(
 );
  
 /**
- * Get the requested page table from respective parameter
+ * Get or allocate the requested page table from the kernel physical direct map.
  * @param page_dir      Page directory to read
  * @param page_directory_index page table's position/index on page directory 
  * note: sudah diberikan implementasinya pada paging.c dengan pendekatan fractal memory maping alias recursive memory mapping.
@@ -208,6 +211,18 @@ struct PageDirectory* paging_get_current_page_directory_addr(void);
  * @param virtual_addr Virtual address to flush
  */
 void flush_single_tlb(void *virtual_addr);
+
+/**
+ * Allocate/release a physical frame for kernel paging structures.
+ */
+void *paging_allocate_kernel_page_frame(void);
+void paging_free_kernel_page_frame(void *physical_addr);
+
+/**
+ * Load a page directory and release a non-current user address space.
+ */
+void paging_switch_page_directory(struct PageDirectory *page_dir);
+bool paging_release_page_directory(struct PageDirectory *page_dir);
  
  
  

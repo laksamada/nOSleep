@@ -5,6 +5,9 @@
 #include "header/driver/keyboard.h"
 #include "header/filesystem/ext2.h"
 #include "header/memory/swap.h"
+#include "header/memory/paging.h"
+#include "header/process/process.h"
+#include "header/scheduler/scheduler.h"
 #include "header/text/framebuffer.h"
 
 #define INTERRUPT_PAGE_FAULT 0xE
@@ -135,9 +138,14 @@ void syscall(struct InterruptFrame frame) {
         case 13: // terminate by PID (kill)
             // ebx: uint32_t pid
             // ecx: bool* return_code (true jika berhasil, false jika PID tidak ditemukan)
-            *((bool *) frame.cpu.general.ecx) = process_destroy(
-                frame.cpu.general.ebx
-            );
+            {
+                struct ProcessControlBlock *current_pcb = process_get_current_running_pcb_pointer();
+                uint32_t current_pid = current_pcb == NULL ? 0 : current_pcb->metadata.pid;
+                bool result = process_destroy(frame.cpu.general.ebx);
+                *((bool *) frame.cpu.general.ecx) = result;
+                if (result && frame.cpu.general.ebx == current_pid)
+                    scheduler_switch_to_next_process();
+            }
             break;
         case 14: // get process info (ps)
             // ebx: struct ProcessInfo* buffer (atau PCB metadata buffer)
@@ -160,6 +168,20 @@ void syscall(struct InterruptFrame frame) {
 
 void main_interrupt_handler(struct InterruptFrame frame) {
    switch (frame.int_number){
+        case PIC1_OFFSET + IRQ_TIMER:
+            pic_ack(IRQ_TIMER);
+            if ((frame.int_stack.cs & 0x3) == 0x3 &&
+                process_get_current_running_pcb_pointer() != NULL) {
+                struct Context context = {
+                    .cpu = frame.cpu,
+                    .eip = frame.int_stack.eip,
+                    .eflags = frame.int_stack.eflags,
+                    .page_directory_virtual_addr = paging_get_current_page_directory_addr(),
+                };
+                scheduler_save_context_to_current_running_pcb(context);
+                scheduler_switch_to_next_process();
+            }
+            break;
         case PIC1_OFFSET + IRQ_KEYBOARD: 
             keyboard_isr();
             break;

@@ -48,10 +48,14 @@ bool swap_in(struct PageDirectory *page_dir, void *virtual_addr) {
         return false;
 
     uint32_t slot = entry->physical_page_base_address;
-    if (!paging_allocate_user_page_frame(page_dir, (void *) vaddr))
+    if (slot >= PAGE_FRAME_ON_SWAP_MAX_COUNT || !swap_manager.swap_used[slot])
         return false;
-
     entry->ignored = 0;
+    if (!paging_allocate_user_page_frame(page_dir, (void *) vaddr)) {
+        entry->ignored = SWAP_PTE_MARKER;
+        return false;
+    }
+
     read_blocks((void *) vaddr, swap_slot_block(slot), SWAP_BLOCKS_PER_PAGE);
     swap_release_slot(slot);
     return true;
@@ -82,7 +86,7 @@ void swap_out(struct PageDirectory *page_dir, void *virtual_addr) {
 }
 
 static bool evict_page(struct PageDirectory *page_dir) {
-    uint32_t page_count = KERNEL_VIRTUAL_ADDRESS_BASE / PAGE_FRAME_SIZE;
+    uint32_t page_count = USER_PROGRAM_MEMORY_LIMIT / PAGE_FRAME_SIZE;
     if (swap_manager.free_count == 0)
         return false;
 
