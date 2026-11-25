@@ -48,11 +48,13 @@ static bool find_executable(struct EXT2DriverRequest *request, uint32_t *size) {
 }
 
 int32_t process_create_user_process(struct EXT2DriverRequest request, uint32_t *pid) {
+    if (pid == NULL)
+        return PROCESS_CREATE_FAIL_INVALID_ENTRYPOINT;
     if (process_manager_state.active_process_count >= PROCESS_COUNT_MAX)
         return PROCESS_CREATE_FAIL_MAX_PROCESS_EXCEEDED;
-    if ((uint32_t) request.buf >= KERNEL_VIRTUAL_ADDRESS_BASE)
+    if ((uint32_t) request.buf >= USER_PROGRAM_MEMORY_LIMIT)
         return PROCESS_CREATE_FAIL_INVALID_ENTRYPOINT;
-    if (request.name_len == 0 || request.name_len >= PROCESS_NAME_LENGTH_MAX)
+    if (request.name == NULL || request.name_len == 0 || request.name_len >= PROCESS_NAME_LENGTH_MAX)
         return PROCESS_CREATE_FAIL_FS_READ_FAILURE;
 
     char name[PROCESS_NAME_LENGTH_MAX] = {0};
@@ -62,6 +64,8 @@ int32_t process_create_user_process(struct EXT2DriverRequest request, uint32_t *
     uint32_t size;
     if (!find_executable(&request, &size) || size == 0)
         return PROCESS_CREATE_FAIL_FS_READ_FAILURE;
+    if (size > USER_PROGRAM_MEMORY_LIMIT - (uint32_t) request.buf)
+        return PROCESS_CREATE_FAIL_NOT_ENOUGH_MEMORY;
 
     uint32_t page_frame_count_needed = ceil_div(size + PAGE_FRAME_SIZE, PAGE_FRAME_SIZE);
     if (size > request.buffer_size || !paging_allocate_check(page_frame_count_needed * PAGE_FRAME_SIZE))

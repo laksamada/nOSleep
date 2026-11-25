@@ -14,7 +14,8 @@
 #define INIT_PROCESS_PID     1
 
 struct TSSEntry _interrupt_tss_entry = {
-    .ss0 = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
+    .ss0         = GDT_KERNEL_DATA_SEGMENT_SELECTOR,
+    .iopb_offset = sizeof(struct TSSEntry),
 };
 
 void set_tss_kernel_current_stack(void) {
@@ -113,6 +114,14 @@ static void syscall_kill(uint32_t pid, int32_t *result) {
     }
 }
 
+static bool user_range_valid(uint32_t addr, uint32_t size) {
+    return addr < USER_PROGRAM_MEMORY_LIMIT && size <= USER_PROGRAM_MEMORY_LIMIT - addr;
+}
+
+static bool user_ptr_valid(uint32_t addr, uint32_t size) {
+    return addr != 0 && user_range_valid(addr, size);
+}
+
 void syscall(struct InterruptFrame frame) {
     uint32_t ebx = frame.cpu.general.ebx;
     uint32_t ecx = frame.cpu.general.ecx;
@@ -120,18 +129,64 @@ void syscall(struct InterruptFrame frame) {
 
     switch (frame.cpu.general.eax) {
         case SYSCALL_READ:
-            *((int8_t *) ecx) = read(*(struct EXT2DriverRequest *) ebx);
+            if (!user_ptr_valid(ebx, sizeof(struct EXT2DriverRequest)) ||
+                !user_ptr_valid(ecx, sizeof(int8_t)))
+                break;
+            {
+                struct EXT2DriverRequest req = *(const struct EXT2DriverRequest *) ebx;
+                if ((req.name_len > 0 && !user_ptr_valid((uint32_t) req.name, req.name_len)) ||
+                    (req.buffer_size > 0 && !user_ptr_valid((uint32_t) req.buf, req.buffer_size))) {
+                    *((int8_t *) ecx) = -1;
+                    break;
+                }
+                *((int8_t *) ecx) = read(req);
+            }
             break;
         case SYSCALL_READ_DIRECTORY:
-            *((int8_t *) ecx) = read_directory((struct EXT2DriverRequest *) ebx);
+            if (!user_ptr_valid(ebx, sizeof(struct EXT2DriverRequest)) ||
+                !user_ptr_valid(ecx, sizeof(int8_t)))
+                break;
+            {
+                struct EXT2DriverRequest req = *(const struct EXT2DriverRequest *) ebx;
+                if ((req.name_len > 0 && !user_ptr_valid((uint32_t) req.name, req.name_len)) ||
+                    (req.buffer_size > 0 && !user_ptr_valid((uint32_t) req.buf, req.buffer_size))) {
+                    *((int8_t *) ecx) = -1;
+                    break;
+                }
+                *((int8_t *) ecx) = read_directory(&req);
+            }
             break;
         case SYSCALL_WRITE:
-            *((int8_t *) ecx) = write((struct EXT2DriverRequest *) ebx);
+            if (!user_ptr_valid(ebx, sizeof(struct EXT2DriverRequest)) ||
+                !user_ptr_valid(ecx, sizeof(int8_t)))
+                break;
+            {
+                struct EXT2DriverRequest req = *(const struct EXT2DriverRequest *) ebx;
+                if ((req.name_len > 0 && !user_ptr_valid((uint32_t) req.name, req.name_len)) ||
+                    (!req.is_directory && req.buffer_size > 0 &&
+                     !user_ptr_valid((uint32_t) req.buf, req.buffer_size))) {
+                    *((int8_t *) ecx) = -1;
+                    break;
+                }
+                *((int8_t *) ecx) = write(&req);
+            }
             break;
         case SYSCALL_DELETE:
-            *((int8_t *) ecx) = delete(*(struct EXT2DriverRequest *) ebx);
+            if (!user_ptr_valid(ebx, sizeof(struct EXT2DriverRequest)) ||
+                !user_ptr_valid(ecx, sizeof(int8_t)))
+                break;
+            {
+                struct EXT2DriverRequest req = *(const struct EXT2DriverRequest *) ebx;
+                if (req.name_len > 0 && !user_ptr_valid((uint32_t) req.name, req.name_len)) {
+                    *((int8_t *) ecx) = -1;
+                    break;
+                }
+                *((int8_t *) ecx) = delete(req);
+            }
             break;
         case SYSCALL_GETCHAR:
+            if (!user_ptr_valid(ebx, sizeof(char)))
+                break;
             mark_current_uses_keyboard();
             get_keyboard_buffer((char *) ebx);
             break;
@@ -139,6 +194,8 @@ void syscall(struct InterruptFrame frame) {
             framebuffer_putchar((char) ebx, (uint8_t) ecx, 0);
             break;
         case SYSCALL_PUTS:
+            if (ecx > 0 && !user_ptr_valid(ebx, ecx))
+                break;
             puts((char *) ebx, ecx, edx);
             break;
         case SYSCALL_KEYBOARD_ON:
@@ -150,6 +207,8 @@ void syscall(struct InterruptFrame frame) {
             framebuffer_set_cursor(0, 0);
             break;
         case SYSCALL_FILE_SIZE: {
+            if (!user_ptr_valid(ecx, sizeof(uint32_t)))
+                break;
             struct EXT2Inode node;
             node.i_size = 0;
             read_inode(ebx, &node);
@@ -157,32 +216,55 @@ void syscall(struct InterruptFrame frame) {
             break;
         }
         case SYSCALL_SWAP_USED:
+            if (!user_ptr_valid(ebx, sizeof(uint32_t)))
+                break;
             *((uint32_t *) ebx) = PAGE_FRAME_ON_SWAP_MAX_COUNT - swap_manager.free_count;
             break;
         case SYSCALL_EXEC: {
+            if (!user_ptr_valid(ebx, sizeof(struct EXT2DriverRequest)) ||
+                !user_ptr_valid(ecx, sizeof(int32_t)) ||
+                (edx != 0 && !user_ptr_valid(edx, sizeof(uint32_t))))
+                break;
+            struct EXT2DriverRequest req = *(const struct EXT2DriverRequest *) ebx;
+            if (req.name_len > 0 && !user_ptr_valid((uint32_t) req.name, req.name_len)) {
+                *((int32_t *) ecx) = PROCESS_CREATE_FAIL_FS_READ_FAILURE;
+                if (edx != 0)
+                    *((uint32_t *) edx) = 0;
+                break;
+            }
             uint32_t pid = 0;
-            *((int32_t *) ecx) = process_create_user_process(*(struct EXT2DriverRequest *) ebx, &pid);
-            *((uint32_t *) edx) = pid;
+            *((int32_t *) ecx) = process_create_user_process(req, &pid);
+            if (edx != 0)
+                *((uint32_t *) edx) = pid;
             break;
         }
         case SYSCALL_PS:
+            if (!user_ptr_valid(edx, sizeof(uint32_t)) ||
+                ecx > USER_PROGRAM_MEMORY_LIMIT / sizeof(struct ProcessInfo) ||
+                (ecx > 0 && !user_ptr_valid(ebx, ecx * sizeof(struct ProcessInfo))))
+                break;
             *((uint32_t *) edx) = process_list_info((struct ProcessInfo *) ebx, ecx);
             break;
         case SYSCALL_KILL:
+            if (!user_ptr_valid(ecx, sizeof(int32_t)))
+                break;
             syscall_kill(ebx, (int32_t *) ecx);
             break;
         case SYSCALL_EXIT:
             terminate_current_process();
         case SYSCALL_GET_TIME:
+            if (!user_ptr_valid(ebx, sizeof(struct CMOSTime)))
+                break;
             cmos_get_time((struct CMOSTime *) ebx);
             break;
         case SYSCALL_WRITE_AT: {
-            const char *text = (const char *) ebx;
             uint8_t row = ecx >> 8, col = ecx & 0xFF;
-            if (row >= 25 || col >= 80)
+            if (row >= 25 || col >= 80 || ebx == 0 || ebx >= USER_PROGRAM_MEMORY_LIMIT)
                 break;
+            const char *text = (const char *) ebx;
+            uint32_t max_chars = USER_PROGRAM_MEMORY_LIMIT - ebx;
             uint32_t written = 0;
-            for (uint32_t i = 0; text[i] != '\0' && col + i < 80; i++) {
+            for (uint32_t i = 0; i < max_chars && col + i < 80 && text[i] != '\0'; i++) {
                 framebuffer_write(row, col + i, text[i], edx & 0xF, (edx >> 4) & 0xF);
                 written++;
             }
@@ -199,9 +281,14 @@ void syscall(struct InterruptFrame frame) {
         case SYSCALL_YIELD:
             scheduler_yield(frame);
         case SYSCALL_GET_TICKS:
+            if (!user_ptr_valid(ebx, sizeof(uint32_t)))
+                break;
             *((uint32_t *) ebx) = scheduler_get_ticks();
             break;
         case SYSCALL_PROCESS_ALIVE: {
+            if (!user_ptr_valid(ecx, sizeof(bool)) ||
+                (edx != 0 && !user_ptr_valid(edx, sizeof(bool))))
+                break;
             struct ProcessControlBlock *pcb = process_find(ebx);
             *((bool *) ecx) = pcb != NULL;
             if (edx != 0)

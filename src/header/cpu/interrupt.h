@@ -135,8 +135,12 @@ struct TSSEntry {
     uint32_t esp0;     // Stack pointer to load when changing to kernel mode
     uint32_t ss0;      // Stack segment to load when changing to kernel mode
     // Unused variables
-    uint32_t unused_register[23];
+    uint32_t unused_register[22];
+    uint16_t reserved_trap;
+    uint16_t iopb_offset;
 } __attribute__((packed));
+
+_Static_assert(sizeof(struct TSSEntry) == 104, "TSSEntry must be 104 bytes");
 
 // Set kernel stack in TSS
 void set_tss_kernel_current_stack(void);

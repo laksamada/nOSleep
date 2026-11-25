@@ -45,6 +45,7 @@ segment_register_setup:
     mov gs, ax
     pop eax
     popf
+    cld
 
     ; Use the current esp as base stack frame, this is only for main_interrupt_handler()
     mov  ebp, esp 

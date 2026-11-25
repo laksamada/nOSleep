@@ -1,6 +1,7 @@
 #include "header/memory/swap.h"
 #include "header/driver/disk.h"
 #include "header/filesystem/ext2.h"
+#include "header/process/process.h"
 #include "header/stdlib/string.h"
 #include "header/text/framebuffer.h"
 
@@ -48,10 +49,14 @@ bool swap_in(struct PageDirectory *page_dir, void *virtual_addr) {
         return false;
 
     uint32_t slot = entry->physical_page_base_address;
-    if (!paging_allocate_user_page_frame(page_dir, (void *) vaddr))
+    if (slot >= PAGE_FRAME_ON_SWAP_MAX_COUNT || !swap_manager.swap_used[slot])
         return false;
-
     entry->ignored = 0;
+    if (!paging_allocate_user_page_frame(page_dir, (void *) vaddr)) {
+        entry->ignored = SWAP_PTE_MARKER;
+        return false;
+    }
+
     read_blocks((void *) vaddr, swap_slot_block(slot), SWAP_BLOCKS_PER_PAGE);
     swap_release_slot(slot);
     return true;
@@ -82,9 +87,10 @@ void swap_out(struct PageDirectory *page_dir, void *virtual_addr) {
 }
 
 static bool evict_page(struct PageDirectory *page_dir) {
-    uint32_t page_count = KERNEL_VIRTUAL_ADDRESS_BASE / PAGE_FRAME_SIZE;
+    uint32_t page_count = USER_PROGRAM_MEMORY_LIMIT / PAGE_FRAME_SIZE;
     if (swap_manager.free_count == 0)
         return false;
+    clock_hand %= page_count;
 
     for (uint32_t scanned = 0; scanned < 2 * page_count; scanned++) {
         uint32_t page_directory_index = clock_hand >> 10;
@@ -141,6 +147,25 @@ static bool page_fault_fail(const char *reason, uint32_t fault_address, uint32_t
         __asm__ volatile("cli; hlt");
 }
 
+static bool evict_any_page(struct PageDirectory *faulting_dir) {
+    if (evict_page(faulting_dir))
+        return true;
+
+    for (uint32_t i = 0; i < PROCESS_COUNT_MAX; i++) {
+        if (_process_list[i].metadata.state == PROCESS_INACTIVE)
+            continue;
+        struct PageDirectory *other_dir = _process_list[i].context.page_directory_virtual_addr;
+        if (other_dir == NULL || other_dir == faulting_dir)
+            continue;
+        paging_use_page_directory(other_dir);
+        bool evicted = evict_page(other_dir);
+        paging_use_page_directory(faulting_dir);
+        if (evicted)
+            return true;
+    }
+    return false;
+}
+
 bool handle_page_fault(uint32_t error_code) {
     uint32_t fault_address = read_cr2();
     struct PageDirectory *page_dir = paging_get_current_page_directory_addr();
@@ -151,7 +176,7 @@ bool handle_page_fault(uint32_t error_code) {
         return page_fault_fail("address outside user program", fault_address, error_code);
 
     while (page_manager_state.free_page_frame_count < 2)
-        if (!evict_page(page_dir))
+        if (!evict_any_page(page_dir))
             return page_fault_fail("out of memory and swap", fault_address, error_code);
 
     if (swap_in(page_dir, (void *) fault_address))
