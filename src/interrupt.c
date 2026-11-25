@@ -9,6 +9,8 @@
 #include "header/scheduler/scheduler.h"
 #include "header/process/syscall.h"
 #include "header/driver/cmos.h"
+#include "header/driver/mouse.h"
+#include "header/driver/graphics.h"
 
 #define INTERRUPT_PAGE_FAULT 0xE
 #define INIT_PROCESS_PID     1
@@ -65,6 +67,11 @@ void pic_remap(void) {
     // Restore saved masks
     out(PIC1_DATA, PIC_DISABLE_ALL_MASK);
     out(PIC2_DATA, PIC_DISABLE_ALL_MASK);
+}
+
+static uint32_t current_pid(void) {
+    struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
+    return current != NULL ? current->metadata.pid : 0;
 }
 
 static struct {
@@ -191,12 +198,14 @@ void syscall(struct InterruptFrame frame) {
             get_keyboard_buffer((char *) ebx);
             break;
         case SYSCALL_PUTCHAR:
-            framebuffer_putchar((char) ebx, (uint8_t) ecx, 0);
+            if (!graphics_is_owner(current_pid()))
+                framebuffer_putchar((char) ebx, (uint8_t) ecx, 0);
             break;
         case SYSCALL_PUTS:
             if (ecx > 0 && !user_ptr_valid(ebx, ecx))
                 break;
-            puts((char *) ebx, ecx, edx);
+            if (!graphics_is_owner(current_pid()))
+                puts((char *) ebx, ecx, edx);
             break;
         case SYSCALL_KEYBOARD_ON:
             mark_current_uses_keyboard();
@@ -295,6 +304,64 @@ void syscall(struct InterruptFrame frame) {
                 *((bool *) edx) = pcb != NULL && pcb->metadata.uses_keyboard;
             break;
         }
+        case SYSCALL_GRAPHICS_MODE: {
+            if (ecx != 0 && !user_ptr_valid(ecx, sizeof(struct GraphicsInfo)))
+                break;
+            bool ok = graphics_set_mode(ebx != 0, current_pid());
+            if (ecx != 0) {
+                struct GraphicsInfo *info = (struct GraphicsInfo *) ecx;
+                info->width  = ok ? GRAPHICS_WIDTH : 0;
+                info->height = ok ? GRAPHICS_HEIGHT : 0;
+            }
+            break;
+        }
+        case SYSCALL_GRAPHICS_BLIT: {
+            if (!user_ptr_valid(ebx, sizeof(struct BlitRequest)))
+                break;
+            struct BlitRequest req = *(const struct BlitRequest *) ebx;
+            if (req.width == 0 || req.height == 0)
+                break;
+            if (req.width > USER_PROGRAM_MEMORY_LIMIT / sizeof(uint32_t) / req.height)
+                break;
+            uint32_t pixel_bytes = req.width * req.height * sizeof(uint32_t);
+            if (!user_ptr_valid((uint32_t) req.pixels, pixel_bytes))
+                break;
+            graphics_blit(&req, current_pid());
+            break;
+        }
+        case SYSCALL_MOUSE_STATE:
+            if (!user_ptr_valid(ebx, sizeof(struct MouseState)))
+                break;
+            mouse_get_state((struct MouseState *) ebx);
+            break;
+        case SYSCALL_KEY_EVENT:
+            if (!user_ptr_valid(ebx, sizeof(uint16_t)))
+                break;
+            mark_current_uses_keyboard();
+            if (!keyboard_get_event((uint16_t *) ebx))
+                *((uint16_t *) ebx) = 0;
+            break;
+        case SYSCALL_GRAPHICS_FONT:
+            if (!user_ptr_valid(ebx, GRAPHICS_FONT_SIZE))
+                break;
+            graphics_get_font((uint8_t *) ebx);
+            break;
+        case SYSCALL_TEXT_SCREEN:
+            if (!user_ptr_valid(ebx, sizeof(struct TextScreen)))
+                break;
+            framebuffer_read_screen((struct TextScreen *) ebx);
+            break;
+        case SYSCALL_KEYBOARD_FOCUS:
+            if (ebx)
+                keyboard_state_activate();
+            else
+                keyboard_state_deactivate();
+            break;
+        case SYSCALL_GRAPHICS_OWNER:
+            if (!user_ptr_valid(ebx, sizeof(bool)))
+                break;
+            *((bool *) ebx) = graphics_is_owner(current_pid());
+            break;
         default:
             break;
     }
@@ -309,6 +376,9 @@ void main_interrupt_handler(struct InterruptFrame frame) {
             break;
         case PIC1_OFFSET + IRQ_KEYBOARD:
             keyboard_isr();
+            break;
+        case PIC1_OFFSET + IRQ_MOUSE:
+            mouse_isr();
             break;
         case INTERRUPT_PAGE_FAULT:
             if (!handle_page_fault(frame.int_stack.error_code))

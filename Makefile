@@ -57,7 +57,14 @@ STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffr
 CFLAGS        = $(ARCH_CFLAG) $(DEBUG_CFLAG) $(WARNING_CFLAG) $(STRIP_CFLAG) -c -I$(SOURCE_FOLDER)
 AFLAGS        = -f elf32 -g -F dwarf
 
-USER_PROGRAMS  = clock hello
+USER_FOLDER   = $(SOURCE_FOLDER)/user
+LIBC_FOLDER   = $(USER_FOLDER)/libc
+USER_OUTPUT   = $(OUTPUT_FOLDER)/user
+USER_PROGRAMS = clock hello
+USER_CFLAGS   = $(ARCH_CFLAG) -O2 -g -ffreestanding -fno-pie -fno-stack-protector -nostdlib -nostdinc \
+                -fno-asynchronous-unwind-tables -isystem $(shell $(CC) -print-file-name=include) \
+                -I$(LIBC_FOLDER)/include -I$(SOURCE_FOLDER)
+LIBC_OBJECTS  = $(USER_OUTPUT)/crt0.o $(USER_OUTPUT)/libc.o $(USER_OUTPUT)/stdio.o $(USER_OUTPUT)/nosleep.o $(USER_OUTPUT)/divide.o
 KERNEL_OBJECTS = $(OUTPUT_FOLDER)/kernel-entrypoint.o $(OUTPUT_FOLDER)/kernel.o \
                  $(OUTPUT_FOLDER)/portio.o $(OUTPUT_FOLDER)/gdt.o \
                  $(OUTPUT_FOLDER)/framebuffer.o $(OUTPUT_FOLDER)/disk.o \
@@ -66,9 +73,10 @@ KERNEL_OBJECTS = $(OUTPUT_FOLDER)/kernel-entrypoint.o $(OUTPUT_FOLDER)/kernel.o 
                  $(OUTPUT_FOLDER)/idt.o $(OUTPUT_FOLDER)/keyboard.o \
                  $(OUTPUT_FOLDER)/paging.o $(OUTPUT_FOLDER)/swap.o \
                  $(OUTPUT_FOLDER)/process.o $(OUTPUT_FOLDER)/scheduler.o \
-                 $(OUTPUT_FOLDER)/context-switch.o $(OUTPUT_FOLDER)/cmos.o
-QEMU_FLAGS     = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
-                 -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+                 $(OUTPUT_FOLDER)/context-switch.o $(OUTPUT_FOLDER)/cmos.o \
+                 $(OUTPUT_FOLDER)/mouse.o $(OUTPUT_FOLDER)/graphics.o
+QEMU_FLAGS    = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
+                -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 
 
 run: build
@@ -78,7 +86,8 @@ run-nogdb: build
 build: iso
 clean:
 	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/inserter \
-		$(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(addprefix $(OUTPUT_FOLDER)/,$(USER_PROGRAMS))
+		$(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(addprefix $(OUTPUT_FOLDER)/,$(USER_PROGRAMS)) \
+		$(USER_OUTPUT)
 
 disk:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -103,6 +112,8 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/scheduler.c -o $(OUTPUT_FOLDER)/scheduler.o
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/context-switch.s -o $(OUTPUT_FOLDER)/context-switch.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/cmos.c -o $(OUTPUT_FOLDER)/cmos.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/mouse.c -o $(OUTPUT_FOLDER)/mouse.o
+	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/graphics.c -o $(OUTPUT_FOLDER)/graphics.o
 
 	@echo Linking object files and generate elf32...
 	@$(LIN) $(LFLAGS) $(KERNEL_OBJECTS) -o $(OUTPUT_FOLDER)/kernel
@@ -146,17 +157,21 @@ insert-shell: inserter user-shell
 	@echo Inserting shell into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter -f shell 1 $(DISK_NAME).bin
 
-user-programs:
-	@mkdir -p $(OUTPUT_FOLDER)
-	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o crt0.o
-	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
+libc:
+	@mkdir -p $(USER_OUTPUT)
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o $(USER_OUTPUT)/crt0.o
+	@$(CC) $(USER_CFLAGS) -c $(LIBC_FOLDER)/libc.c -o $(USER_OUTPUT)/libc.o
+	@$(CC) $(USER_CFLAGS) -c $(LIBC_FOLDER)/stdio.c -o $(USER_OUTPUT)/stdio.o
+	@$(CC) $(USER_CFLAGS) -c $(LIBC_FOLDER)/nosleep.c -o $(USER_OUTPUT)/nosleep.o
+	@$(CC) $(USER_CFLAGS) -c $(LIBC_FOLDER)/divide.c -o $(USER_OUTPUT)/divide.o
+
+user-programs: libc
 	@for program in $(USER_PROGRAMS); do \
-		$(CC) $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user/$$program.c -o $$program.o && \
+		$(CC) $(USER_CFLAGS) -Wall -Wextra -c $(USER_FOLDER)/$$program.c -o $(USER_OUTPUT)/$$program.o && \
 		$(LIN) $(USER_LFLAGS) --oformat=binary \
-			crt0.o $$program.o string.o -o $(OUTPUT_FOLDER)/$$program || exit 1; \
+			$(LIBC_OBJECTS) $(USER_OUTPUT)/$$program.o -o $(OUTPUT_FOLDER)/$$program || exit 1; \
 		$(PRINT_SIZE) $(OUTPUT_FOLDER)/$$program; \
 	done
-	@rm -f *.o
 
 insert-programs: inserter user-programs
 	@cd $(OUTPUT_FOLDER); for program in $(USER_PROGRAMS); do ./inserter -f $$program 1 $(DISK_NAME).bin || exit 1; done

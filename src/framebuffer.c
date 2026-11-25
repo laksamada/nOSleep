@@ -7,6 +7,7 @@
 
 static uint8_t cursor_row = 0;
 static uint8_t cursor_col = 0;
+static uint8_t text_shadow[FRAMEBUFFER_SIZE];
 
 void framebuffer_set_cursor(uint8_t r, uint8_t c) {
     // 1. Hitung posisi linear (1D) dari baris dan kolom. 
@@ -33,10 +34,23 @@ void framebuffer_write(uint8_t row, uint8_t col, char c, uint8_t fg, uint8_t bg)
 
     // 2. Indeks genap (index): Masukkan karakter ASCII
     FRAMEBUFFER_MEMORY_OFFSET[index] = c;
+    text_shadow[index] = c;
 
     // 3. Indeks ganjil (index + 1): Masukkan kode warna.
     // Background digeser 4 bit ke kiri, lalu digabung (OR) dengan foreground.
     FRAMEBUFFER_MEMORY_OFFSET[index + 1] = (bg << 4) | (fg & 0x0F);
+    text_shadow[index + 1] = (bg << 4) | (fg & 0x0F);
+}
+
+void framebuffer_refresh(void) {
+    memcpy(FRAMEBUFFER_MEMORY_OFFSET, text_shadow, FRAMEBUFFER_SIZE);
+    framebuffer_set_cursor(cursor_row, cursor_col);
+}
+
+void framebuffer_read_screen(struct TextScreen *screen) {
+    memcpy(screen->cells, text_shadow, FRAMEBUFFER_SIZE);
+    screen->cursor_row = cursor_row;
+    screen->cursor_col = cursor_col;
 }
 
 void framebuffer_clear(void) {
@@ -72,6 +86,7 @@ void framebuffer_putchar(char c, uint8_t fg, uint8_t bg) {
 
     if (cursor_row >= FRAMEBUFFER_TEXT_ROWS) {
         memmove(FRAMEBUFFER_MEMORY_OFFSET, FRAMEBUFFER_MEMORY_OFFSET + 80 * 2, 80 * (FRAMEBUFFER_TEXT_ROWS - 1) * 2);
+        memmove(text_shadow, text_shadow + 80 * 2, 80 * (FRAMEBUFFER_TEXT_ROWS - 1) * 2);
         for (uint8_t col = 0; col < 80; col++)
             framebuffer_write(FRAMEBUFFER_TEXT_ROWS - 1, col, 0x00, 0x07, 0x00);
         cursor_row = FRAMEBUFFER_TEXT_ROWS - 1;

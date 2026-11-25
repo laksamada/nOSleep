@@ -23,6 +23,29 @@
 #define SYSCALL_YIELD             17
 #define SYSCALL_GET_TICKS         18
 #define SYSCALL_PROCESS_ALIVE     19
+#define SYSCALL_GRAPHICS_MODE     20
+#define SYSCALL_GRAPHICS_BLIT     21
+#define SYSCALL_MOUSE_STATE       22
+#define SYSCALL_KEY_EVENT         23
+#define SYSCALL_GRAPHICS_FONT     26
+#define SYSCALL_TEXT_SCREEN       27
+#define SYSCALL_KEYBOARD_FOCUS    28
+#define SYSCALL_GRAPHICS_OWNER    29
+
+#define KEY_EVENT_RELEASED 0x8000
+#define KEY_EVENT_EXTENDED 0x0100
+
+#define GRAPHICS_FONT_HEIGHT 16
+#define GRAPHICS_FONT_SIZE   (256 * GRAPHICS_FONT_HEIGHT)
+
+#define TEXT_COLUMNS 80
+#define TEXT_ROWS    25
+
+struct TextScreen {
+    uint8_t cells[TEXT_COLUMNS * TEXT_ROWS * 2];
+    uint8_t cursor_row;
+    uint8_t cursor_col;
+};
 
 struct ProcessInfo {
     uint32_t pid;
@@ -38,6 +61,26 @@ struct CMOSTime {
     uint8_t  day;
     uint8_t  month;
     uint16_t year;
+};
+
+struct GraphicsInfo {
+    uint32_t width;
+    uint32_t height;
+};
+
+struct BlitRequest {
+    const uint32_t *pixels;
+    int32_t  x;
+    int32_t  y;
+    uint32_t width;
+    uint32_t height;
+};
+
+struct MouseState {
+    int32_t  x;
+    int32_t  y;
+    uint8_t  buttons;
+    uint32_t left_presses;
 };
 
 #endif

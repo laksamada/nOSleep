@@ -1,5 +1,6 @@
 #include "header/process/process.h"
 #include "header/memory/paging.h"
+#include "header/driver/graphics.h"
 #include "header/stdlib/string.h"
 #include "header/cpu/gdt.h"
 
@@ -113,6 +114,7 @@ bool process_destroy(uint32_t pid) {
     if (pcb == NULL)
         return false;
 
+    graphics_release(pid);
     paging_free_page_directory(pcb->context.page_directory_virtual_addr);
     memset(pcb, 0, sizeof(struct ProcessControlBlock));
     process_manager_state.active_process_count--;

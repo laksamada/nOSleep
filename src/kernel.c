@@ -6,6 +6,8 @@
 #include "header/cpu/interrupt.h"
 #include "header/cpu/idt.h"
 #include "header/driver/keyboard.h"
+#include "header/driver/mouse.h"
+#include "header/driver/graphics.h"
 #include "header/driver/disk.h"
 #include "header/filesystem/ext2.h"
 #include "header/memory/paging.h"
@@ -20,6 +22,9 @@ void kernel_setup(void) {
     initialize_filesystem_ext2();
     gdt_install_tss();
     set_tss_register();
+
+    graphics_init();
+    mouse_init();
     activate_keyboard_interrupt();
     initialize_idt();
 
@@ -35,6 +40,10 @@ void kernel_setup(void) {
         puts("shell not found, run make disk and make insert-shell\n", 53, 0xC);
         while (true);
     }
+
+    request.name     = "gui";
+    request.name_len = 3;
+    process_create_user_process(request, &pid);
 
     set_tss_kernel_current_stack();
     scheduler_init();

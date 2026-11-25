@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "header/process/syscall.h"
 
 #define FRAMEBUFFER_MEMORY_OFFSET ((uint8_t*) 0xC00B8000)
 #define CURSOR_PORT_CMD    0x03D4
@@ -12,6 +13,7 @@
 // Baris 0-23 untuk teks shell (bisa scroll), baris 24 untuk status seperti jam
 #define FRAMEBUFFER_TEXT_ROWS   24
 #define FRAMEBUFFER_STATUS_ROW  24
+#define FRAMEBUFFER_SIZE        (TEXT_COLUMNS * TEXT_ROWS * 2)
 
 /**
  * Terminal framebuffer
@@ -53,5 +55,11 @@ void framebuffer_clear(void);
 void framebuffer_putchar(char c, uint8_t fg, uint8_t bg);
 
 void puts(const char *str, uint32_t count, uint32_t color);
+
+// Tulis ulang isi layar teks dari salinan di RAM, dipakai setelah keluar dari mode grafis
+void framebuffer_refresh(void);
+
+// Salin isi layar teks dan posisi kursor, dipakai GUI untuk jendela terminal
+void framebuffer_read_screen(struct TextScreen *screen);
 
 #endif

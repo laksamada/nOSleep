@@ -70,9 +70,46 @@ void activate_keyboard_interrupt(void) {
     out(PIC1_DATA, in(PIC1_DATA) & ~(1 << IRQ_KEYBOARD));
 }
 
+static struct {
+    uint16_t events[KEYBOARD_EVENT_QUEUE_SIZE];
+    uint32_t head;
+    uint32_t tail;
+    bool     extended;
+} key_events;
+
+static void record_key_event(uint8_t scancode) {
+    if (scancode == EXTENDED_SCANCODE_BYTE) {
+        key_events.extended = true;
+        return;
+    }
+
+    uint16_t event = scancode & ~SCANCODE_RELEASE_BIT;
+    if (scancode & SCANCODE_RELEASE_BIT)
+        event |= KEY_EVENT_RELEASED;
+    if (key_events.extended)
+        event |= KEY_EVENT_EXTENDED;
+    key_events.extended = false;
+
+    uint32_t next = (key_events.tail + 1) % KEYBOARD_EVENT_QUEUE_SIZE;
+    if (next != key_events.head) {
+        key_events.events[key_events.tail] = event;
+        key_events.tail = next;
+    }
+}
+
+bool keyboard_get_event(uint16_t *event) {
+    if (key_events.head == key_events.tail)
+        return false;
+    *event = key_events.events[key_events.head];
+    key_events.head = (key_events.head + 1) % KEYBOARD_EVENT_QUEUE_SIZE;
+    return true;
+}
+
 void keyboard_isr(void) {
     uint8_t scancode = in(KEYBOARD_DATA_PORT);
     uint8_t row, col;
+
+    record_key_event(scancode);
 
     framebuffer_get_cursor(&row, &col);
 
