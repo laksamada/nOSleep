@@ -138,19 +138,8 @@ struct TSSEntry {
     uint32_t unused_register[23];
 } __attribute__((packed));
 
-struct CMOSTime {
-    uint8_t second;
-    uint8_t minute;
-    uint8_t hour;
-    uint8_t day;
-    uint8_t month;
-    uint16_t year;
-} __attribute__((packed));
-
 // Set kernel stack in TSS
 void set_tss_kernel_current_stack(void);
-void cmos_get_time(struct CMOSTime *time);
-
 
 void syscall(struct InterruptFrame frame);
 

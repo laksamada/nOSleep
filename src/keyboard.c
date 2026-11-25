@@ -92,7 +92,7 @@ void keyboard_isr(void) {
                     }
                     break;
                 case EXT_SCANCODE_DOWN:
-                if(row<24){
+                if(row<FRAMEBUFFER_TEXT_ROWS-1){
                 framebuffer_set_cursor(row + 1, col);
                     }
                     break;
