@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include "header/filesystem/ext2.h"
 #include "header/stdlib/string.h"
+#include "header/process/syscall.h"
 
 #define MAX_INPUT_LEN 256
 #define MAX_ARGS 16
@@ -25,6 +26,10 @@
 #define COLOR_PROMPT 0x0B
 #define COLOR_WELCOME 0x0A
 
+#define PROGRAM_SIZE_MAX    0x200000u
+#define PROCESS_LIST_MAX    16
+#define FOREGROUND_GRACE_MS 100u
+
 static uint32_t current_dir_inode = ROOT_INODE;
 static char cwd_name[MAX_PATH_LEN] = "/";
 
@@ -38,13 +43,10 @@ static char find_path[MAX_PATH_LEN];
 static uint32_t find_count;
 
 void syscall(uint32_t eax, uint32_t ebx, uint32_t ecx, uint32_t edx) {
-    __asm__ volatile("mov %0, %%ebx" : /* <Empty> */ : "r"(ebx));
-    __asm__ volatile("mov %0, %%ecx" : /* <Empty> */ : "r"(ecx));
-    __asm__ volatile("mov %0, %%edx" : /* <Empty> */ : "r"(edx));
-    __asm__ volatile("mov %0, %%eax" : /* <Empty> */ : "r"(eax));
-    // Note : gcc usually use %eax as intermediate register,
-    //        so it need to be the last one to mov
-    __asm__ volatile("int $0x30");
+    __asm__ volatile("int $0x30"
+        : "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx)
+        : /* <Empty> */
+        : "memory");
 }
 
 static uint32_t strlen(const char *str) {
@@ -84,6 +86,16 @@ static void sys_getchar(char *c) {
     syscall(4, (uint32_t) c, 0, 0);
 }
 
+static void sys_yield(void) {
+    syscall(SYSCALL_YIELD, 0, 0, 0);
+}
+
+static uint32_t sys_get_ticks(void) {
+    uint32_t ticks = 0;
+    syscall(SYSCALL_GET_TICKS, (uint32_t) &ticks, 0, 0);
+    return ticks;
+}
+
 static void print_error(const char *prefix, const char *message, const char *name) {
     sys_puts(prefix, COLOR_ERROR);
     sys_puts(": ", COLOR_ERROR);
@@ -96,7 +108,7 @@ static void print_error(const char *prefix, const char *message, const char *nam
 }
 
 static void print_usage(const char *usage) {
-    sys_puts("Penggunaan: ", COLOR_USAGE);
+    sys_puts("Usage: ", COLOR_USAGE);
     sys_puts(usage, COLOR_USAGE);
     sys_puts("\n", COLOR_USAGE);
 }
@@ -326,26 +338,26 @@ static bool prepare_destination(const char *command, const char *src, uint32_t d
     uint8_t src_type, dest_type;
 
     if (!find_entry(current_dir_inode, src, &src_inode, &src_type)) {
-        print_error(command, "tidak ditemukan:", src);
+        print_error(command, "not found:", src);
         return false;
     }
     if (src_inode == dest_parent) {
-        print_error(command, "tidak bisa ke dalam dirinya sendiri:", src);
+        print_error(command, "cannot copy or move into itself:", src);
         return false;
     }
     if (!find_entry(dest_parent, dest_name, &dest_inode, &dest_type))
         return true;
 
     if (dest_inode == src_inode) {
-        print_error(command, "sumber dan tujuan sama:", src);
+        print_error(command, "source and destination are the same:", src);
         return false;
     }
     if (dest_type == EXT2_FT_DIR) {
-        print_error(command, "tujuan sudah ada dan berupa folder:", dest_name);
+        print_error(command, "destination is an existing folder:", dest_name);
         return false;
     }
     if (delete_entry(dest_parent, dest_name, false) != 0) {
-        print_error(command, "gagal menimpa", dest_name);
+        print_error(command, "failed to overwrite", dest_name);
         return false;
     }
     return true;
@@ -354,7 +366,7 @@ static bool prepare_destination(const char *command, const char *src, uint32_t d
 static bool cmd_ls(void) {
     uint8_t block[BLOCK_SIZE];
     if (!read_directory_block(current_dir_inode, block)) {
-        print_error("ls", "gagal membaca direktori", NULL);
+        print_error("ls", "failed to read directory", NULL);
         return false;
     }
 
@@ -384,7 +396,7 @@ static bool cmd_cd(const char *target) {
         return true;
 
     if (!find_entry(current_dir_inode, target, &inode, &file_type) || file_type != EXT2_FT_DIR) {
-        print_error("cd", "tidak ada direktori bernama", target);
+        print_error("cd", "no such directory:", target);
         return false;
     }
 
@@ -397,7 +409,7 @@ static bool cmd_cd(const char *target) {
         uint32_t len = strlen(cwd_name);
         uint32_t name_len = strlen(target);
         if (len + name_len + 2 >= MAX_PATH_LEN) {
-            print_error("cd", "path terlalu panjang", NULL);
+            print_error("cd", "path too long", NULL);
             return false;
         }
         if (len > 1)
@@ -411,9 +423,9 @@ static bool cmd_cd(const char *target) {
 static bool cmd_mkdir(const char *name) {
     int8_t retcode = write_entry(current_dir_inode, name, NULL, 0, true);
     if (retcode == 1)
-        print_error("mkdir", "nama sudah dipakai:", name);
+        print_error("mkdir", "name already exists:", name);
     else if (retcode != 0)
-        print_error("mkdir", "gagal membuat folder", name);
+        print_error("mkdir", "failed to create folder", name);
     return retcode == 0;
 }
 
@@ -430,9 +442,9 @@ static bool cmd_cat(const char *name) {
     uint32_t size = 0;
     int8_t retcode = load_file(current_dir_inode, name, &size);
     if (retcode == 1) {
-        print_error("cat", "bukan sebuah file:", name);
+        print_error("cat", "not a file:", name);
     } else if (retcode != 0) {
-        print_error("cat", "file tidak ditemukan:", name);
+        print_error("cat", "file not found:", name);
     } else {
         out_buffer((const char *) FILE_BUFFER, size);
         if (size == 0 || FILE_BUFFER[size - 1] != '\n')
@@ -447,18 +459,18 @@ static bool cmd_cp(const char *src, const char *dest, bool recursive) {
     const char *dest_name;
 
     if (!find_entry(current_dir_inode, src, &inode, &file_type)) {
-        print_error("cp", "tidak ditemukan:", src);
+        print_error("cp", "not found:", src);
         return false;
     }
     if (file_type == EXT2_FT_DIR && !recursive) {
-        print_error("cp", "gunakan -r untuk folder:", src);
+        print_error("cp", "use -r for folders:", src);
         return false;
     }
     if (!resolve_destination(src, dest, &dest_parent, &dest_name) ||
         !prepare_destination("cp", src, dest_parent, dest_name))
         return false;
     if (!copy_tree(current_dir_inode, src, dest_parent, dest_name)) {
-        print_error("cp", "gagal menyalin", src);
+        print_error("cp", "failed to copy", src);
         return false;
     }
     return true;
@@ -469,19 +481,19 @@ static bool cmd_rm(const char *name, bool recursive) {
     uint8_t file_type;
 
     if (!find_entry(current_dir_inode, name, &inode, &file_type)) {
-        print_error("rm", "tidak ditemukan:", name);
+        print_error("rm", "not found:", name);
         return false;
     }
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-        print_error("rm", "tidak boleh menghapus", name);
+        print_error("rm", "cannot remove", name);
         return false;
     }
     if (file_type == EXT2_FT_DIR && !recursive) {
-        print_error("rm", "gunakan -r untuk folder:", name);
+        print_error("rm", "use -r for folders:", name);
         return false;
     }
     if (!remove_tree(current_dir_inode, name)) {
-        print_error("rm", "gagal menghapus", name);
+        print_error("rm", "failed to remove", name);
         return false;
     }
     return true;
@@ -495,11 +507,11 @@ static bool cmd_mv(const char *src, const char *dest) {
         !prepare_destination("mv", src, dest_parent, dest_name))
         return false;
     if (!copy_tree(current_dir_inode, src, dest_parent, dest_name)) {
-        print_error("mv", "gagal memindahkan", src);
+        print_error("mv", "failed to move", src);
         return false;
     }
     if (!remove_tree(current_dir_inode, src)) {
-        print_error("mv", "gagal menghapus sumber", src);
+        print_error("mv", "failed to remove source", src);
         return false;
     }
     return true;
@@ -540,7 +552,7 @@ static bool cmd_find(const char *name) {
     find_count = 0;
     find_walk(ROOT_INODE, 1, name);
     if (find_count == 0) {
-        print_error("find", "tidak ditemukan:", name);
+        print_error("find", "not found:", name);
         return false;
     }
     return true;
@@ -562,7 +574,7 @@ static bool cmd_grep(const char *pattern, const char *name) {
     if (name != NULL) {
         int8_t retcode = load_file(current_dir_inode, name, &size);
         if (retcode != 0) {
-            print_error("grep", "file tidak ditemukan:", name);
+            print_error("grep", "file not found:", name);
             return false;
         }
         data = (const char *) FILE_BUFFER;
@@ -621,7 +633,7 @@ static bool cmd_memtest(const char *count_arg) {
     for (uint32_t i = 0; i < pages; i++) {
         volatile uint32_t *page = (volatile uint32_t *) (MEMTEST_BASE + i * MEMTEST_PAGE_SIZE);
         if (page[0] != 0xCAFE0000u + i || page[1023] != 0xBEEF0000u + i) {
-            print_error("memtest", "data rusak", NULL);
+            print_error("memtest", "data corrupted", NULL);
             return false;
         }
     }
@@ -630,26 +642,267 @@ static bool cmd_memtest(const char *count_arg) {
     syscall(10, (uint32_t) &swap_used, 0, 0);
     out_str("memtest OK: ");
     out_uint(pages);
-    out_str(" halaman, swap terpakai ");
+    out_str(" pages, swap used ");
     out_uint(swap_used);
-    out_str(" halaman\n");
+    out_str(" pages\n");
+    return true;
+}
+
+static void out_column(const char *text, uint32_t width) {
+    uint32_t len = strlen(text);
+    out_str(text);
+    while (len++ < width)
+        out_char(' ');
+}
+
+static void uint_to_string(uint32_t value, char *text) {
+    char digits[10];
+    int count = 0;
+    do {
+        digits[count++] = '0' + value % 10;
+        value /= 10;
+    } while (value != 0);
+    while (count > 0)
+        *text++ = digits[--count];
+    *text = '\0';
+}
+
+static const char *exec_error_message(int32_t retcode) {
+    switch (retcode) {
+        case 1:  return "process limit reached:";
+        case 2:  return "invalid entrypoint:";
+        case 3:  return "not enough memory for";
+        default: return "program not found:";
+    }
+}
+
+static void query_process(uint32_t pid, bool *alive, bool *interactive) {
+    *alive = false;
+    *interactive = false;
+    syscall(SYSCALL_PROCESS_ALIVE, pid, (uint32_t) alive, (uint32_t) interactive);
+}
+
+static bool parse_uint_strict(const char *str, uint32_t *out) {
+    if (str == NULL || *str == '\0')
+        return false;
+    uint32_t value = 0;
+    while (*str != '\0') {
+        if (*str < '0' || *str > '9')
+            return false;
+        value = value * 10 + (*str++ - '0');
+    }
+    *out = value;
+    return true;
+}
+
+static bool resolve_program_path(const char *path, uint32_t *parent_inode, char *basename, bool *has_slash) {
+    if (path == NULL || path[0] == '\0')
+        return false;
+
+    uint32_t len = strlen(path);
+    bool contains_slash = false;
+    for (uint32_t i = 0; i < len; i++) {
+        if (path[i] == '/') {
+            contains_slash = true;
+            break;
+        }
+    }
+
+    if (!contains_slash) {
+        if (strcmp(path, ".") == 0 || strcmp(path, "..") == 0 || len >= MAX_NAME_LEN)
+            return false;
+        *has_slash = false;
+        *parent_inode = current_dir_inode;
+        strcpy(basename, path);
+        return true;
+    }
+
+    *has_slash = true;
+    if (path[len - 1] == '/')
+        return false;
+
+    uint32_t dir = (path[0] == '/') ? ROOT_INODE : current_dir_inode;
+    const char *p = path;
+    while (*p != '\0') {
+        while (*p == '/')
+            p++;
+        if (*p == '\0')
+            return false;
+
+        char seg[MAX_NAME_LEN];
+        uint32_t seg_len = 0;
+        while (p[seg_len] != '\0' && p[seg_len] != '/') {
+            if (seg_len + 1 >= MAX_NAME_LEN)
+                return false;
+            seg[seg_len] = p[seg_len];
+            seg_len++;
+        }
+        seg[seg_len] = '\0';
+        p += seg_len;
+
+        if (*p == '\0') {
+            if (strcmp(seg, ".") == 0 || strcmp(seg, "..") == 0)
+                return false;
+            strcpy(basename, seg);
+            *parent_inode = dir;
+            return true;
+        }
+
+        if (strcmp(seg, ".") == 0)
+            continue;
+
+        uint32_t next_inode;
+        uint8_t file_type;
+        if (!find_entry(dir, seg, &next_inode, &file_type) || file_type != EXT2_FT_DIR)
+            return false;
+        dir = next_inode;
+    }
+    return false;
+}
+
+static bool run_program(const char *name, bool background, bool as_command) {
+    uint32_t parent_inode = current_dir_inode;
+    char prog_name[MAX_NAME_LEN];
+    bool has_slash = false;
+
+    if (!resolve_program_path(name, &parent_inode, prog_name, &has_slash)) {
+        if (as_command)
+            print_error("shell", "command not found:", name);
+        else
+            print_error("exec", "program not found:", name);
+        return false;
+    }
+
+    struct EXT2DriverRequest request = {
+        .buf          = (uint8_t *) 0,
+        .name         = prog_name,
+        .name_len     = strlen(prog_name),
+        .parent_inode = parent_inode,
+        .buffer_size  = PROGRAM_SIZE_MAX,
+    };
+    int32_t retcode = -1;
+    uint32_t pid = 0;
+    syscall(SYSCALL_EXEC, (uint32_t) &request, (uint32_t) &retcode, (uint32_t) &pid);
+    if (retcode == 4 && !has_slash && parent_inode != ROOT_INODE) {
+        request.parent_inode = ROOT_INODE;
+        syscall(SYSCALL_EXEC, (uint32_t) &request, (uint32_t) &retcode, (uint32_t) &pid);
+    }
+
+    if (retcode != 0) {
+        if (as_command && retcode == 4)
+            print_error("shell", "command not found:", name);
+        else
+            print_error("exec", exec_error_message(retcode), name);
+        return false;
+    }
+
+    if (!background) {
+        uint32_t start = sys_get_ticks();
+        bool alive = false;
+        bool interactive = false;
+        while (true) {
+            query_process(pid, &alive, &interactive);
+            if (!alive)
+                return true;
+            if (!interactive && sys_get_ticks() - start >= FOREGROUND_GRACE_MS)
+                break;
+            sys_yield();
+        }
+    }
+
+    char pid_text[12];
+    uint_to_string(pid, pid_text);
+    out_str("[");
+    out_str(pid_text);
+    out_str("] ");
+    out_str(prog_name);
+    out_str(" running in background\n");
+    return true;
+}
+
+static bool cmd_ps(void) {
+    struct ProcessInfo list[PROCESS_LIST_MAX];
+    uint32_t count = 0;
+    syscall(SYSCALL_PS, (uint32_t) list, PROCESS_LIST_MAX, (uint32_t) &count);
+
+    out_str("PID   STATE     MEMORY    NAME\n");
+    for (uint32_t i = 0; i < count; i++) {
+        char number[12];
+        uint_to_string(list[i].pid, number);
+        out_column(number, 6);
+        out_column(list[i].state == 2 ? "running" : "ready", 10);
+        uint_to_string(list[i].frame_count * 4, number);
+        strcpy(number + strlen(number), " KB");
+        out_column(number, 10);
+        out_str(list[i].name);
+        out_char('\n');
+    }
+    return true;
+}
+
+static bool cmd_kill(const char *pid_text) {
+    uint32_t pid = 0;
+    if (!parse_uint_strict(pid_text, &pid)) {
+        print_error("kill", "invalid PID:", pid_text);
+        return false;
+    }
+    int32_t result = -1;
+    syscall(SYSCALL_KILL, pid, (uint32_t) &result, 0);
+
+    if (result == 1) {
+        print_error("kill", "no process with PID", pid_text);
+        return false;
+    }
+    if (result == 2) {
+        print_error("kill", "shell (PID 1) cannot be killed", NULL);
+        return false;
+    }
+    out_str("process ");
+    out_str(pid_text);
+    out_str(" killed\n");
+    return true;
+}
+
+static bool cmd_exit(void) {
+    struct ProcessInfo list[PROCESS_LIST_MAX];
+    uint32_t count = 0;
+    syscall(SYSCALL_PS, (uint32_t) list, PROCESS_LIST_MAX, (uint32_t) &count);
+
+    uint32_t current_pid = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (list[i].state == 2) {
+            current_pid = list[i].pid;
+            break;
+        }
+    }
+    if (current_pid <= 1) {
+        print_error("exit", "shell (PID 1) cannot exit", NULL);
+        return false;
+    }
+
+    syscall(SYSCALL_EXIT, 0, 0, 0);
     return true;
 }
 
 static bool cmd_help(void) {
-    out_str("cd <dir>           pindah direktori (.. naik, / ke root)\n");
-    out_str("ls                 isi direktori sekarang\n");
-    out_str("mkdir <nama>       buat folder\n");
-    out_str("cat <file>         tampilkan file\n");
-    out_str("cp [-r] <a> <b>    salin file/folder\n");
-    out_str("rm [-r] <nama>     hapus file/folder\n");
-    out_str("mv <a> <b>         pindah atau rename\n");
-    out_str("find <nama>        cari di seluruh file system\n");
-    out_str("grep <pola> [file] cari teks, bisa dari pipeline\n");
-    out_str("echo <teks>        tulis teks\n");
-    out_str("clear              bersihkan layar\n");
-    out_str("memtest [n]        tes memori dan swap\n");
-    out_str("Pipeline: ls | grep a    Tulis file: echo halo > a.txt\n");
+    out_str("cd <dir>           change directory (.. up, / root)\n");
+    out_str("ls                 list current directory\n");
+    out_str("mkdir <name>       create folder\n");
+    out_str("cat <file>         print file\n");
+    out_str("cp [-r] <a> <b>    copy file or folder\n");
+    out_str("rm [-r] <name>     remove file or folder\n");
+    out_str("mv <a> <b>         move or rename\n");
+    out_str("find <name>        search the whole file system\n");
+    out_str("grep <pat> [file]  search text, works in pipelines\n");
+    out_str("echo <text>        print text\n");
+    out_str("clear              clear screen\n");
+    out_str("memtest [n]        test memory and swap\n");
+    out_str("exec <prog> [&]    run program (supports paths), & for background\n");
+    out_str("<prog> [&]         same as exec, e.g. hello, clock\n");
+    out_str("ps                 list processes\n");
+    out_str("kill <pid>         stop a process\n");
+    out_str("exit               exit sub-shell (PID 1 protected)\n");
+    out_str("Pipeline: ls | grep a    Write file: echo hello > a.txt\n");
     return true;
 }
 
@@ -678,8 +931,21 @@ static bool execute_command(int argc, char *argv[]) {
     const char *command = argv[0];
     bool recursive = argc > 1 && strcmp(argv[1], "-r") == 0;
     int first = recursive ? 2 : 1;
+    bool background = argc > 1 && strcmp(argv[argc - 1], "&") == 0;
 
-    if (strcmp(command, "cd") == 0) {
+    if (strcmp(command, "exec") == 0) {
+        if (argc > 1 && strcmp(argv[1], "&") != 0)
+            return run_program(argv[1], background, false);
+        print_usage("exec <program> [&]");
+    } else if (strcmp(command, "ps") == 0) {
+        return cmd_ps();
+    } else if (strcmp(command, "kill") == 0) {
+        if (argc > 1)
+            return cmd_kill(argv[1]);
+        print_usage("kill <pid>");
+    } else if (strcmp(command, "exit") == 0) {
+        return cmd_exit();
+    } else if (strcmp(command, "cd") == 0) {
         if (argc > 1)
             return cmd_cd(argv[1]);
         print_usage("cd <directory>");
@@ -698,7 +964,7 @@ static bool execute_command(int argc, char *argv[]) {
     } else if (strcmp(command, "rm") == 0) {
         if (argc > first)
             return cmd_rm(argv[first], recursive);
-        print_usage("rm [-r] <nama>");
+        print_usage("rm [-r] <name>");
     } else if (strcmp(command, "mv") == 0) {
         if (argc > 2)
             return cmd_mv(argv[1], argv[2]);
@@ -706,7 +972,7 @@ static bool execute_command(int argc, char *argv[]) {
     } else if (strcmp(command, "find") == 0) {
         if (argc > 1)
             return cmd_find(argv[1]);
-        print_usage("find <nama>");
+        print_usage("find <name>");
     } else if (strcmp(command, "grep") == 0) {
         if (argc > 1)
             return cmd_grep(argv[1], argc > 2 ? argv[2] : NULL);
@@ -720,7 +986,7 @@ static bool execute_command(int argc, char *argv[]) {
     } else if (strcmp(command, "memtest") == 0) {
         return cmd_memtest(argc > 1 ? argv[1] : NULL);
     } else {
-        print_error("shell", "perintah tidak dikenal:", command);
+        return run_program(command, background, true);
     }
     return false;
 }
@@ -744,13 +1010,13 @@ static bool write_redirect(const char *name) {
     uint8_t file_type;
     if (find_entry(current_dir_inode, name, &inode, &file_type)) {
         if (file_type == EXT2_FT_DIR) {
-            print_error("shell", "tujuan berupa folder:", name);
+            print_error("shell", "destination is a folder:", name);
             return false;
         }
         delete_entry(current_dir_inode, name, false);
     }
     if (write_entry(current_dir_inode, name, output_buffer, output_len, false) != 0) {
-        print_error("shell", "gagal menulis file", name);
+        print_error("shell", "failed to write file", name);
         return false;
     }
     return true;
@@ -768,7 +1034,7 @@ static void run_pipeline(char *line) {
     char *stages[MAX_PIPELINE_STAGES];
     int stage_count = split_pipeline(line, stages);
     if (stage_count < 0) {
-        print_error("shell", "pipeline terlalu panjang", NULL);
+        print_error("shell", "pipeline too long", NULL);
         return;
     }
 
@@ -782,7 +1048,7 @@ static void run_pipeline(char *line) {
         int argc = tokenize_input(stages[i], argv);
         if (argc == 0) {
             if (stage_count > 1)
-                print_error("shell", "pipeline tidak lengkap", NULL);
+                print_error("shell", "incomplete pipeline", NULL);
             return;
         }
 
@@ -814,6 +1080,10 @@ static void read_line(char *input_buf) {
     while (true) {
         char c = 0;
         sys_getchar(&c);
+        if (c == 0) {
+            sys_yield();
+            continue;
+        }
 
         if (c == '\n') {
             sys_putchar('\n', COLOR_OUTPUT);
@@ -836,7 +1106,7 @@ int main(void) {
     char input_buf[MAX_INPUT_LEN];
 
     syscall(7, 0, 0, 0);
-    sys_puts("Selamat datang di IF2130 Shell! Ketik help untuk daftar perintah.\n", COLOR_WELCOME);
+    sys_puts("Welcome to IF2130 Shell! Type help for a list of commands.\n", COLOR_WELCOME);
 
     while (true) {
         print_prompt();
