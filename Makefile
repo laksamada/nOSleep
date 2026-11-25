@@ -60,7 +60,7 @@ AFLAGS        = -f elf32 -g -F dwarf
 USER_FOLDER   = $(SOURCE_FOLDER)/user
 LIBC_FOLDER   = $(USER_FOLDER)/libc
 USER_OUTPUT   = $(OUTPUT_FOLDER)/user
-USER_PROGRAMS = clock hello
+USER_PROGRAMS = clock hello gui
 USER_CFLAGS   = $(ARCH_CFLAG) -O2 -g -ffreestanding -fno-pie -fno-stack-protector -nostdlib -nostdinc \
                 -fno-asynchronous-unwind-tables -isystem $(shell $(CC) -print-file-name=include) \
                 -I$(LIBC_FOLDER)/include -I$(SOURCE_FOLDER)

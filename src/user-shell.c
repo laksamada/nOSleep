@@ -865,6 +865,10 @@ static bool resolve_program_path(const char *path, uint32_t *parent_inode, char 
     return false;
 }
 
+static bool hosts_terminal(const char *name) {
+    return strcmp(name, "gui") == 0;
+}
+
 static bool run_program(const char *name, bool background, bool as_command) {
     uint32_t parent_inode = current_dir_inode;
     char prog_name[MAX_NAME_LEN];
@@ -877,6 +881,7 @@ static bool run_program(const char *name, bool background, bool as_command) {
             print_error("exec", "program not found:", name);
         return false;
     }
+    background = background || hosts_terminal(prog_name);
 
     struct EXT2DriverRequest request = {
         .buf          = (uint8_t *) 0,
@@ -907,8 +912,11 @@ static bool run_program(const char *name, bool background, bool as_command) {
         bool interactive = false;
         while (true) {
             query_process(pid, &alive, &interactive);
-            if (!alive)
+            if (!alive) {
+                char leftover;
+                sys_getchar(&leftover);
                 return true;
+            }
             if (!interactive && sys_get_ticks() - start >= FOREGROUND_GRACE_MS)
                 break;
             sys_yield();
@@ -1003,7 +1011,7 @@ static bool cmd_help(void) {
     out_str("clear              clear screen\n");
     out_str("memtest [n]        test memory and swap\n");
     out_str("exec <prog> [&]    run program (supports paths), & for background\n");
-    out_str("<prog> [&]         same as exec, e.g. hello, clock\n");
+    out_str("<prog> [&]         same as exec, e.g. hello, clock, gui, badapple\n");
     out_str("ps                 list processes\n");
     out_str("kill <pid>         stop a process\n");
     out_str("exit               exit sub-shell (PID 1 protected)\n");
