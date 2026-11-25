@@ -60,7 +60,8 @@ AFLAGS        = -f elf32 -g -F dwarf
 USER_FOLDER   = $(SOURCE_FOLDER)/user
 LIBC_FOLDER   = $(USER_FOLDER)/libc
 USER_OUTPUT   = $(OUTPUT_FOLDER)/user
-USER_PROGRAMS = clock hello gui
+USER_PROGRAMS = clock hello gui badapple
+BAD_APPLE     = $(notdir $(wildcard other/badapple/badapple.*))
 USER_CFLAGS   = $(ARCH_CFLAG) -O2 -g -ffreestanding -fno-pie -fno-stack-protector -nostdlib -nostdinc \
                 -fno-asynchronous-unwind-tables -isystem $(shell $(CC) -print-file-name=include) \
                 -I$(LIBC_FOLDER)/include -I$(SOURCE_FOLDER)
@@ -87,7 +88,7 @@ build: iso
 clean:
 	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/inserter \
 		$(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(addprefix $(OUTPUT_FOLDER)/,$(USER_PROGRAMS)) \
-		$(USER_OUTPUT)
+		$(OUTPUT_FOLDER)/badapple.* $(USER_OUTPUT)
 
 disk:
 	@mkdir -p $(OUTPUT_FOLDER)
@@ -174,4 +175,5 @@ user-programs: libc
 	done
 
 insert-programs: inserter user-programs
-	@cd $(OUTPUT_FOLDER); for program in $(USER_PROGRAMS); do ./inserter -f $$program 1 $(DISK_NAME).bin || exit 1; done
+	@cp other/badapple/badapple.* $(OUTPUT_FOLDER)/
+	@cd $(OUTPUT_FOLDER); for file in $(USER_PROGRAMS) $(BAD_APPLE); do ./inserter -f $$file 1 $(DISK_NAME).bin || exit 1; done
