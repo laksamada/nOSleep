@@ -57,9 +57,18 @@ STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffr
 CFLAGS        = $(ARCH_CFLAG) $(DEBUG_CFLAG) $(WARNING_CFLAG) $(STRIP_CFLAG) -c -I$(SOURCE_FOLDER)
 AFLAGS        = -f elf32 -g -F dwarf
 
-USER_PROGRAMS = clock hello
-QEMU_FLAGS    = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
-                -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
+USER_PROGRAMS  = clock hello
+KERNEL_OBJECTS = $(OUTPUT_FOLDER)/kernel-entrypoint.o $(OUTPUT_FOLDER)/kernel.o \
+                 $(OUTPUT_FOLDER)/portio.o $(OUTPUT_FOLDER)/gdt.o \
+                 $(OUTPUT_FOLDER)/framebuffer.o $(OUTPUT_FOLDER)/disk.o \
+                 $(OUTPUT_FOLDER)/string.o $(OUTPUT_FOLDER)/ext2.o \
+                 $(OUTPUT_FOLDER)/intsetup.o $(OUTPUT_FOLDER)/interrupt.o \
+                 $(OUTPUT_FOLDER)/idt.o $(OUTPUT_FOLDER)/keyboard.o \
+                 $(OUTPUT_FOLDER)/paging.o $(OUTPUT_FOLDER)/swap.o \
+                 $(OUTPUT_FOLDER)/process.o $(OUTPUT_FOLDER)/scheduler.o \
+                 $(OUTPUT_FOLDER)/context-switch.o $(OUTPUT_FOLDER)/cmos.o
+QEMU_FLAGS     = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
+                 -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 
 
 run: build
@@ -68,11 +77,14 @@ run-nogdb: build
 	@qemu-system-i386 $(QEMU_FLAGS)
 build: iso
 clean:
-	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel
+	rm -rf *.o *.iso $(OUTPUT_FOLDER)/*.o $(OUTPUT_FOLDER)/*.iso $(OUTPUT_FOLDER)/kernel $(OUTPUT_FOLDER)/inserter \
+		$(OUTPUT_FOLDER)/shell $(OUTPUT_FOLDER)/shell_elf $(addprefix $(OUTPUT_FOLDER)/,$(USER_PROGRAMS))
 
-disk:	
+disk:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@qemu-img create -f raw $(OUTPUT_FOLDER)/$(DISK_NAME).bin 4M
 kernel:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/kernel-entrypoint.s -o $(OUTPUT_FOLDER)/kernel-entrypoint.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/kernel.c -o $(OUTPUT_FOLDER)/kernel.o
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/portio.c -o $(OUTPUT_FOLDER)/portio.o
@@ -93,7 +105,7 @@ kernel:
 	@$(CC) $(CFLAGS) $(SOURCE_FOLDER)/cmos.c -o $(OUTPUT_FOLDER)/cmos.o
 
 	@echo Linking object files and generate elf32...
-	@$(LIN) $(LFLAGS) bin/*.o -o $(OUTPUT_FOLDER)/kernel
+	@$(LIN) $(LFLAGS) $(KERNEL_OBJECTS) -o $(OUTPUT_FOLDER)/kernel
 	@echo Linking object files and generate elf32...
 	@rm -f *.o
     
@@ -106,6 +118,7 @@ iso: kernel
 	@rm -r $(OUTPUT_FOLDER)/iso/
 
 inserter:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@$(HOST_CC) $(HOST_CFLAGS) -g -I$(SOURCE_FOLDER) \
 		$(SOURCE_FOLDER)/stdlib/string.c \
 		$(SOURCE_FOLDER)/ext2.c \
@@ -113,6 +126,7 @@ inserter:
 		-o $(OUTPUT_FOLDER)/inserter
 
 user-shell:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o crt0.o
 	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user-shell.c -o user-shell.o
 	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
@@ -133,6 +147,7 @@ insert-shell: inserter user-shell
 	@cd $(OUTPUT_FOLDER); ./inserter -f shell 1 $(DISK_NAME).bin
 
 user-programs:
+	@mkdir -p $(OUTPUT_FOLDER)
 	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o crt0.o
 	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
 	@for program in $(USER_PROGRAMS); do \
@@ -144,4 +159,4 @@ user-programs:
 	@rm -f *.o
 
 insert-programs: inserter user-programs
-	@cd $(OUTPUT_FOLDER); for program in $(USER_PROGRAMS); do ./inserter -f $$program 1 $(DISK_NAME).bin; done
+	@cd $(OUTPUT_FOLDER); for program in $(USER_PROGRAMS); do ./inserter -f $$program 1 $(DISK_NAME).bin || exit 1; done
