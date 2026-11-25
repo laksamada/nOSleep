@@ -6,7 +6,7 @@ static void ATA_busy_wait() {
 }
 
 static void ATA_DRQ_wait() {
-    while (!(in(0x1F7) & ATA_STATUS_RDY));
+    while (!(in(0x1F7) & ATA_STATUS_DRQ));
 }
 
 void read_blocks(void *ptr, uint32_t logical_block_address, uint8_t block_count) {

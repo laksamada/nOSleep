@@ -15,13 +15,13 @@
 void kernel_setup(void) {
     load_gdt(&_gdt_gdtr);
     pic_remap();
-    initialize_idt();
-    activate_keyboard_interrupt();
     framebuffer_clear();
     framebuffer_set_cursor(0, 0);
     initialize_filesystem_ext2();
     gdt_install_tss();
     set_tss_register();
+    activate_keyboard_interrupt();
+    initialize_idt();
 
     struct EXT2DriverRequest request = {
         .buf          = (uint8_t *) 0,
