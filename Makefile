@@ -57,6 +57,7 @@ STRIP_CFLAG   = -nostdlib -fno-stack-protector -nostartfiles -nodefaultlibs -ffr
 CFLAGS        = $(ARCH_CFLAG) $(DEBUG_CFLAG) $(WARNING_CFLAG) $(STRIP_CFLAG) -c -I$(SOURCE_FOLDER)
 AFLAGS        = -f elf32 -g -F dwarf
 
+USER_PROGRAMS = clock hello
 QEMU_FLAGS    = -rtc base=localtime -drive file=$(OUTPUT_FOLDER)/$(DISK_NAME).bin,format=raw,if=ide,index=0,media=disk \
                 -cdrom $(OUTPUT_FOLDER)/$(ISO_NAME).iso
 
@@ -130,3 +131,17 @@ user-shell:
 insert-shell: inserter user-shell
 	@echo Inserting shell into root directory...
 	@cd $(OUTPUT_FOLDER); ./inserter -f shell 1 $(DISK_NAME).bin
+
+user-programs:
+	@$(ASM) $(AFLAGS) $(SOURCE_FOLDER)/crt0.s -o crt0.o
+	@$(CC)  $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/stdlib/string.c -o string.o
+	@for program in $(USER_PROGRAMS); do \
+		$(CC) $(CFLAGS) -fno-pie $(SOURCE_FOLDER)/user/$$program.c -o $$program.o && \
+		$(LIN) $(USER_LFLAGS) --oformat=binary \
+			crt0.o $$program.o string.o -o $(OUTPUT_FOLDER)/$$program || exit 1; \
+		$(PRINT_SIZE) $(OUTPUT_FOLDER)/$$program; \
+	done
+	@rm -f *.o
+
+insert-programs: inserter user-programs
+	@cd $(OUTPUT_FOLDER); for program in $(USER_PROGRAMS); do ./inserter -f $$program 1 $(DISK_NAME).bin; done
