@@ -1,67 +1,74 @@
 #include "header/scheduler/scheduler.h"
-#include "header/cpu/interrupt.h"
 #include "header/cpu/portio.h"
-#include "header/memory/paging.h"
-#include "header/process/process.h"
+#include "header/text/framebuffer.h"
 
-#define PIT_INPUT_FREQUENCY 1193182u
-#define SCHEDULER_TICK_RATE 100u
+#define PIT_COMMAND_PORT   0x43
+#define PIT_CHANNEL0_PORT  0x40
+#define PIT_BASE_FREQUENCY 1193182
+#define PIT_MODE_SQUARE    0x36
 
-static uint32_t last_scheduled_pid;
+static uint32_t timer_ticks;
+static uint32_t quantum_left = SCHEDULER_QUANTUM_TICKS;
 
 void scheduler_init(void) {
-    uint16_t divisor = (uint16_t) (PIT_INPUT_FREQUENCY / SCHEDULER_TICK_RATE);
-    out(0x43, 0x36);
-    out(0x40, (uint8_t) divisor);
-    out(0x40, (uint8_t) (divisor >> 8));
+    uint16_t divisor = PIT_BASE_FREQUENCY / PIT_TIMER_FREQUENCY;
+    out(PIT_COMMAND_PORT, PIT_MODE_SQUARE);
+    out(PIT_CHANNEL0_PORT, divisor & 0xFF);
+    out(PIT_CHANNEL0_PORT, divisor >> 8);
+    out(PIC1_DATA, in(PIC1_DATA) & ~(1 << IRQ_TIMER));
+}
 
-    out(PIC1_DATA, in(PIC1_DATA) & ~(1u << IRQ_TIMER));
-    last_scheduled_pid = 0;
+uint32_t scheduler_get_ticks(void) {
+    return timer_ticks;
 }
 
 void scheduler_save_context_to_current_running_pcb(struct Context ctx) {
     struct ProcessControlBlock *pcb = process_get_current_running_pcb_pointer();
-    if (pcb == NULL)
-        return;
-
-    pcb->context = ctx;
-    pcb->metadata.state = PROCESS_STATE_READY;
-    last_scheduled_pid = pcb->metadata.pid;
-    process_set_current_running_pcb(NULL);
+    if (pcb != NULL)
+        pcb->context = ctx;
 }
 
-static struct ProcessControlBlock *find_next_ready_process(void) {
-    struct ProcessControlBlock *next_after_last = NULL;
-    struct ProcessControlBlock *first_ready = NULL;
+void scheduler_switch_to_next_process(void) {
+    struct ProcessControlBlock *current = process_get_current_running_pcb_pointer();
+    if (current != NULL)
+        current->metadata.state = PROCESS_READY;
 
-    for (uint32_t slot = 0; slot < PROCESS_COUNT_MAX; slot++) {
-        struct ProcessControlBlock *pcb = process_get_slot(slot);
-        if (pcb == NULL || pcb->metadata.state != PROCESS_STATE_READY)
+    int32_t start = process_manager_state.current_index;
+    for (int32_t step = 1; step <= PROCESS_COUNT_MAX; step++) {
+        int32_t index = (start + step) % PROCESS_COUNT_MAX;
+        struct ProcessControlBlock *next = &_process_list[index];
+        if (next->metadata.state == PROCESS_INACTIVE)
             continue;
 
-        if (first_ready == NULL || pcb->metadata.pid < first_ready->metadata.pid)
-            first_ready = pcb;
-        if (pcb->metadata.pid > last_scheduled_pid &&
-            (next_after_last == NULL || pcb->metadata.pid < next_after_last->metadata.pid))
-            next_after_last = pcb;
+        next->metadata.state = PROCESS_RUNNING;
+        process_manager_state.current_index = index;
+        quantum_left = SCHEDULER_QUANTUM_TICKS;
+        paging_use_page_directory(next->context.page_directory_virtual_addr);
+        process_context_switch(next->context);
     }
 
-    return next_after_last != NULL ? next_after_last : first_ready;
+    puts("\nNo process left to run\n", 24, 0xC);
+    while (true)
+        __asm__ volatile("hlt");
 }
 
-__attribute__((noreturn)) void scheduler_switch_to_next_process(void) {
-    __asm__ volatile("cli");
+void scheduler_yield(struct InterruptFrame frame) {
+    struct Context ctx = {
+        .cpu    = frame.cpu,
+        .eip    = frame.int_stack.eip,
+        .eflags = frame.int_stack.eflags,
+        .page_directory_virtual_addr = paging_get_current_page_directory_addr(),
+    };
+    scheduler_save_context_to_current_running_pcb(ctx);
+    scheduler_switch_to_next_process();
+}
 
-    struct ProcessControlBlock *next = find_next_ready_process();
-    if (next == NULL) {
-        process_set_current_running_pcb(NULL);
-        paging_switch_page_directory(&_paging_kernel_page_directory);
-        while (true)
-            __asm__ volatile("sti; hlt; cli");
-    }
+void scheduler_handle_timer(struct InterruptFrame frame) {
+    timer_ticks++;
+    pic_ack(IRQ_TIMER);
 
-    last_scheduled_pid = next->metadata.pid;
-    process_set_current_running_pcb(next);
-    paging_switch_page_directory(&_paging_kernel_page_directory);
-    process_context_switch(&next->context);
+    bool from_user = (frame.int_stack.cs & 0x3) == 0x3;
+    if (!from_user || --quantum_left > 0)
+        return;
+    scheduler_yield(frame);
 }

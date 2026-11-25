@@ -48,14 +48,10 @@ bool swap_in(struct PageDirectory *page_dir, void *virtual_addr) {
         return false;
 
     uint32_t slot = entry->physical_page_base_address;
-    if (slot >= PAGE_FRAME_ON_SWAP_MAX_COUNT || !swap_manager.swap_used[slot])
+    if (!paging_allocate_user_page_frame(page_dir, (void *) vaddr))
         return false;
-    entry->ignored = 0;
-    if (!paging_allocate_user_page_frame(page_dir, (void *) vaddr)) {
-        entry->ignored = SWAP_PTE_MARKER;
-        return false;
-    }
 
+    entry->ignored = 0;
     read_blocks((void *) vaddr, swap_slot_block(slot), SWAP_BLOCKS_PER_PAGE);
     swap_release_slot(slot);
     return true;
@@ -86,7 +82,7 @@ void swap_out(struct PageDirectory *page_dir, void *virtual_addr) {
 }
 
 static bool evict_page(struct PageDirectory *page_dir) {
-    uint32_t page_count = USER_PROGRAM_MEMORY_LIMIT / PAGE_FRAME_SIZE;
+    uint32_t page_count = KERNEL_VIRTUAL_ADDRESS_BASE / PAGE_FRAME_SIZE;
     if (swap_manager.free_count == 0)
         return false;
 
@@ -129,32 +125,38 @@ static void print_text(const char *text) {
         framebuffer_putchar(*text++, 0xC, 0);
 }
 
-static void page_fault_panic(const char *reason, uint32_t fault_address, uint32_t error_code) {
-    print_text("\nPAGE FAULT: ");
+static bool page_fault_fail(const char *reason, uint32_t fault_address, uint32_t error_code) {
+    bool from_user = error_code & 0x4;
+    print_text(from_user ? "\nprogram killed, page fault: " : "\nPAGE FAULT: ");
     print_text(reason);
     print_text("\naddress ");
     print_hex(fault_address);
     print_text(" error ");
     print_hex(error_code);
+    if (from_user) {
+        print_text("\n");
+        return false;
+    }
     while (true)
         __asm__ volatile("cli; hlt");
 }
 
-void handle_page_fault(uint32_t error_code) {
+bool handle_page_fault(uint32_t error_code) {
     uint32_t fault_address = read_cr2();
     struct PageDirectory *page_dir = paging_get_current_page_directory_addr();
 
     if (error_code & 0x1)
-        page_fault_panic("protection violation", fault_address, error_code);
+        return page_fault_fail("protection violation", fault_address, error_code);
     if (fault_address >= USER_PROGRAM_MEMORY_LIMIT)
-        page_fault_panic("address outside user program", fault_address, error_code);
+        return page_fault_fail("address outside user program", fault_address, error_code);
 
     while (page_manager_state.free_page_frame_count < 2)
         if (!evict_page(page_dir))
-            page_fault_panic("out of memory and swap", fault_address, error_code);
+            return page_fault_fail("out of memory and swap", fault_address, error_code);
 
     if (swap_in(page_dir, (void *) fault_address))
-        return;
+        return true;
     if (!paging_allocate_user_page_frame(page_dir, (void *) fault_address))
-        page_fault_panic("cannot allocate page frame", fault_address, error_code);
+        return page_fault_fail("cannot allocate page frame", fault_address, error_code);
+    return true;
 }

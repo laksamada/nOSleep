@@ -43,7 +43,8 @@ uint32_t read_cr2(void);
  * handle page fault
  * @param error_code error code read from cpu state
  * make sure to handle every cases including page replacement
+ * @return false jika fault berasal dari program user dan tidak bisa ditangani
  */
-void handle_page_fault(uint32_t error_code);
+bool handle_page_fault(uint32_t error_code);
 
 #endif
