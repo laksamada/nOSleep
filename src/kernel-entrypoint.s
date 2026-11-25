@@ -5,11 +5,9 @@ global kernel_execute_user_program   ; execute initial user program from kernel
 extern kernel_setup                  ; kernel C entrypoint
 extern _paging_kernel_page_directory ; kernel page directory
 extern _paging_kernel_page_table     ; kernel page table
-extern _paging_kernel_page_tables    ; remaining kernel direct-map tables
 
 KERNEL_VIRTUAL_BASE equ 0xC0000000    ; kernel virtual memory
 KERNEL_STACK_SIZE   equ 2097152       ; size of stack in bytes
-KERNEL_DIRECT_MAP_TABLE_COUNT equ 32
 MAGIC_NUMBER        equ 0x1BADB002    ; define the magic number constant
 FLAGS               equ 0x0           ; multiboot flags
 CHECKSUM            equ -MAGIC_NUMBER ; calculate the checksum (magic number + checksum + flags == 0)
@@ -49,30 +47,8 @@ loader_entrypoint:         ; the loader label (defined as entry point in linker 
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE], eax
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xC00], eax
 
-    ; Map the remaining 124 MiB of kernel physical memory at KERNEL_VIRTUAL_BASE.
-    mov edi, _paging_kernel_page_tables - KERNEL_VIRTUAL_BASE
-    mov eax, 0x400000
-    mov ecx, (KERNEL_DIRECT_MAP_TABLE_COUNT - 1) * 1024
-.fill_kernel_direct_map:
-    mov edx, eax
-    or  edx, 0x3
-    mov [edi], edx
-    add edi, 4
-    add eax, 0x1000
-    loop .fill_kernel_direct_map
-
-    mov esi, _paging_kernel_page_tables - KERNEL_VIRTUAL_BASE
-    mov edi, _paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xC04
-    mov ecx, KERNEL_DIRECT_MAP_TABLE_COUNT - 1
-.set_kernel_direct_map_pdes:
-    mov eax, esi
-    or  eax, 0x3
-    mov [edi], eax
-    add edi, 4
-    add esi, 0x1000
-    loop .set_kernel_direct_map_pdes
-
-    ; Keep a recursive mapping for page-table inspection.
+    ; Recursive (fractal) mapping: PDE ke-1023 menunjuk ke page directory itu sendiri.
+    ; Wajib ada supaya paging_get_page_table() bisa mengakses page table di 0xFFC00000.
     mov eax, _paging_kernel_page_directory - KERNEL_VIRTUAL_BASE
     or  eax, 0x3
     mov [_paging_kernel_page_directory - KERNEL_VIRTUAL_BASE + 0xFFC], eax
