@@ -43,6 +43,15 @@ make run-nogdb
 
 Click the Terminal window and type `help`. `badapple` is right there no cap.
 
+<img src="docs/h-squad.png" alt="who did what" width="100%">
+
+| Name | NIM | What |
+|---|---|---|
+| Reinhard Mikhael Tandra | 13525076 | framebuffer, disk driver, ext2 read, external inserter, PCB & process lifecycle, GUI syscalls, user libc |
+| Arga Cyrano Simanjuntak | 13525094 | build system, ext2 init, GDT/TSS, shell, clock & hello apps, Bad Apple |
+| Satya Radhityan Yahya | 13525098 | keyboard, ext2 write, context switch, paging, scheduler, syscall hardening, graphics & mouse driver |
+| Mochamad Fachri Alfaridzi | 13525128 | GDT, interrupt, ext2 delete & fixes, user mode + syscall, swap, process syscalls, CMOS RTC, desktop GUI, README |
+
 <img src="docs/h-credits.png" alt="credits" width="100%">
 
 - base kit from [OS Template 2026](https://github.com/Nathan-Marpaung/os-template-2026) by the Lab Sister ITB assistants
