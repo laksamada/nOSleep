@@ -73,7 +73,7 @@ check("inode bitmap = inode yang bisa dicapai dari root", used_inodes == set(liv
       "terpakai tapi yatim: %s, dipakai tapi bit 0: %s" % (sorted(used_inodes - set(live)),
                                                             sorted(set(live) - used_inodes)))
 
-reserved = set(range(ROOT_BLOCK))
+reserved = {g * BLOCKS_PER_GROUP + i for g in range(GROUPS) for i in range(ROOT_BLOCK)}
 expected_blocks = reserved | set(owner)
 used_blocks = img.used_blocks()
 check("block bitmap = metadata + block yang dirujuk inode", used_blocks == expected_blocks,
@@ -87,14 +87,14 @@ for g in range(GROUPS):
     d = img.bgd(g)
     free_b = BLOCKS_PER_GROUP - len(img.bits(d["block_bitmap"], BLOCKS_PER_GROUP))
     free_i = INODES_PER_GROUP - len(img.bits(d["inode_bitmap"], INODES_PER_GROUP))
+    dirs_g = sum(1 for ino in dirs if (ino - 1) // INODES_PER_GROUP == g)
     total_free_blocks += free_b
     total_free_inodes += free_i
     if (d["free_blocks"], d["free_inodes"]) != (free_b, free_i):
         count_problems.append("bgd[%d] free_blocks=%d (bitmap %d), free_inodes=%d (bitmap %d)"
                               % (g, d["free_blocks"], free_b, d["free_inodes"], free_i))
-dirs_g0 = img.bgd(0)["dirs"]
-if dirs_g0 != len(dirs):
-    count_problems.append("bgd[0] dirs=%d, folder yang ada %d" % (dirs_g0, len(dirs)))
+    if d["dirs"] != dirs_g:
+        count_problems.append("bgd[%d] dirs=%d, folder yang ada %d" % (g, d["dirs"], dirs_g))
 if (sb["free_blocks"], sb["free_inodes"]) != (total_free_blocks, total_free_inodes):
     count_problems.append("superblock free_blocks=%d (bitmap %d), free_inodes=%d (bitmap %d)"
                           % (sb["free_blocks"], total_free_blocks, sb["free_inodes"], total_free_inodes))

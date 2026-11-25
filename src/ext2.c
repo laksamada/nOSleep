@@ -188,7 +188,11 @@ void initialize_filesystem_ext2(void) {
 //read
 
 void read_inode(uint32_t inode_num, struct EXT2Inode *out_inode) {
-    if (inode_num == 0) return; // Inode 0 tidak valid di ext2
+    if (out_inode == NULL) return;
+    if (inode_num == 0 || inode_num > INODES_PER_GROUP * GROUPS_COUNT) {
+        memset(out_inode, 0, sizeof(struct EXT2Inode));
+        return; // Inode 0 tidak valid di ext2
+    }
 
     uint32_t bgd_idx = inode_to_bgd(inode_num);
     uint32_t local_idx = inode_to_local(inode_num); // 0-indexed di dalam grup
@@ -401,16 +405,8 @@ static uint32_t get_directory_block(struct EXT2Inode *node, uint32_t index)
     return 0;
 }
 
-static void commit_ext2_metadata(void)
-{
-    struct BlockBuffer buffer;
-    memset(&buffer, 0, sizeof(buffer));
-    memcpy(&buffer, &superblock, sizeof(struct EXT2Superblock));
-    write_blocks(&buffer, 1, 1);
-    memset(&buffer, 0, sizeof(buffer));
-    memcpy(&buffer, &bgd_table, sizeof(struct EXT2BlockGroupDescriptorTable));
-    write_blocks(&buffer, 2, 1);
-}
+static void write_filesystem_metadata(void);
+static bool allocate_data_block(uint32_t *block_num);
 
 static void remove_directory_entry(uint8_t *block, uint32_t target)
 {
@@ -514,6 +510,9 @@ void deallocate_blocks(void *loc, uint32_t blocks)
 
 void deallocate_node(uint32_t inode)
 {
+    if (inode == 0 || inode > INODES_PER_GROUP * GROUPS_COUNT)
+        return;
+
     struct EXT2Inode node;
     read_inode(inode, &node);
     deallocate_blocks(node.i_block, node.i_blocks);
@@ -532,7 +531,7 @@ void deallocate_node(uint32_t inode)
         if (is_directory_inode(&node) && bgd_table.table[bgd].bg_used_dirs_count > 0)
             bgd_table.table[bgd].bg_used_dirs_count--;
     }
-    commit_ext2_metadata();
+    write_filesystem_metadata();
 }
 
 int8_t delete(struct EXT2DriverRequest request)
@@ -570,8 +569,25 @@ int8_t delete(struct EXT2DriverRequest request)
                 if (is_directory_inode(&node) == request.is_directory) {
                     if (request.is_directory && !is_directory_empty(inode))
                         return 2;
-                    remove_directory_entry(block.buf, offset);
-                    write_blocks(&block, location, 1);
+                    if (index > 0 && index < 12 && offset == 0 && entry->rec_len == BLOCK_SIZE) {
+                        for (uint32_t j = index; j < 11; j++)
+                            parent.i_block[j] = parent.i_block[j + 1];
+                        parent.i_block[11] = 0;
+                        if (parent.i_blocks > 0)
+                            parent.i_blocks--;
+                        if (parent.i_size >= BLOCK_SIZE)
+                            parent.i_size -= BLOCK_SIZE;
+                        sync_node(&parent, request.parent_inode);
+
+                        struct BlockBuffer bmp;
+                        uint32_t last = GROUPS_COUNT;
+                        deallocate_block(&location, 1, &bmp, 0, &last, false);
+                        if (last < GROUPS_COUNT)
+                            write_blocks(&bmp, bgd_table.table[last].bg_block_bitmap, 1);
+                    } else {
+                        remove_directory_entry(block.buf, offset);
+                        write_blocks(&block, location, 1);
+                    }
                     deallocate_node(inode);
                     return 0;
                 }
@@ -665,6 +681,30 @@ int8_t write(struct EXT2DriverRequest *request) {
         return 1;
     }
 
+    uint32_t dir_block_count = parent_node.i_size / BLOCK_SIZE;
+    if (dir_block_count == 0) {
+        return 2;
+    }
+
+    uint8_t parent_buf[BLOCK_SIZE];
+    uint16_t required_rec_len = get_entry_record_len(request->name_len);
+    uint32_t target_dir_block = 0;
+    for (uint32_t idx = 0; idx < dir_block_count; idx++) {
+        uint32_t blk = get_directory_block(&parent_node, idx);
+        if (blk == 0)
+            break;
+        read_blocks(parent_buf, blk, 1);
+        if (directory_has_space(parent_buf, BLOCK_SIZE, required_rec_len)) {
+            target_dir_block = blk;
+            break;
+        }
+    }
+
+    bool need_new_dir_block = (target_dir_block == 0);
+    if (need_new_dir_block && dir_block_count >= 12) {
+        return -1;
+    }
+
     uint32_t blocks_needed = request->buffer_size / BLOCK_SIZE;
     if (request->buffer_size % BLOCK_SIZE != 0) {
         blocks_needed++;
@@ -674,14 +714,7 @@ int8_t write(struct EXT2DriverRequest *request) {
     }
     uint32_t blocks_to_allocate = blocks_needed + (blocks_needed > 12 ? 1u : 0u);
     if (blocks_needed > 12 + BLOCK_SIZE / sizeof(uint32_t) ||
-        blocks_to_allocate > superblock.s_free_blocks_count) {
-        return -1;
-    }
-
-    uint8_t parent_buf[BLOCK_SIZE];
-    read_inode_content(&parent_node, parent_buf, BLOCK_SIZE);
-    uint16_t required_rec_len = get_entry_record_len(request->name_len);
-    if (!directory_has_space(parent_buf, parent_node.i_size, required_rec_len)) {
+        blocks_to_allocate + (need_new_dir_block ? 1u : 0u) > superblock.s_free_blocks_count) {
         return -1;
     }
 
@@ -701,6 +734,12 @@ int8_t write(struct EXT2DriverRequest *request) {
         new_node.i_blocks = 1;
 
         init_directory_table(&new_node, new_inode_num, request->parent_inode);
+        if (new_node.i_block[0] == 0) {
+            struct EXT2Inode zero_node = {0};
+            sync_node(&zero_node, new_inode_num);
+            deallocate_node(new_inode_num);
+            return -1;
+        }
 
         bgd_table.table[prefered_bgd].bg_used_dirs_count++;
     } else {
@@ -712,6 +751,9 @@ int8_t write(struct EXT2DriverRequest *request) {
         if (blocks_needed > 0) {
             allocate_node_blocks(request->buf, &new_node, prefered_bgd);
             if (new_node.i_block[0] == 0) {
+                struct EXT2Inode zero_node = {0};
+                sync_node(&zero_node, new_inode_num);
+                deallocate_node(new_inode_num);
                 return -1;
             }
         }
@@ -719,46 +761,69 @@ int8_t write(struct EXT2DriverRequest *request) {
 
     sync_node(&new_node, new_inode_num);
 
-    struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)parent_buf;
-    uint32_t offset = 0;
-    bool entry_added = false;
+    if (need_new_dir_block) {
+        uint32_t new_dir_block = 0;
+        if (!allocate_data_block(&new_dir_block)) {
+            deallocate_node(new_inode_num);
+            return -1;
+        }
+        memset(parent_buf, 0, BLOCK_SIZE);
+        struct EXT2DirectoryEntry *new_entry = (struct EXT2DirectoryEntry *)parent_buf;
+        new_entry->inode = new_inode_num;
+        new_entry->rec_len = BLOCK_SIZE;
+        new_entry->name_len = request->name_len;
+        new_entry->file_type = request->is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+        memcpy(get_entry_name(new_entry), request->name, request->name_len);
+        write_blocks(parent_buf, new_dir_block, 1);
 
-    while (offset < BLOCK_SIZE && offset < parent_node.i_size) {
-        uint16_t actual_len = get_entry_record_len(entry->name_len);
-        if (entry->rec_len < actual_len || entry->rec_len > BLOCK_SIZE - offset) {
+        parent_node.i_block[dir_block_count] = new_dir_block;
+        parent_node.i_blocks += 1;
+        parent_node.i_size += BLOCK_SIZE;
+    } else {
+        struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)parent_buf;
+        uint32_t offset = 0;
+        bool entry_added = false;
+
+        while (offset < BLOCK_SIZE) {
+            uint16_t actual_len = get_entry_record_len(entry->name_len);
+            if (entry->rec_len < actual_len || entry->rec_len > BLOCK_SIZE - offset) {
+                deallocate_node(new_inode_num);
+                return -1;
+            }
+
+            if (entry->rec_len - actual_len >= required_rec_len) {
+                uint16_t old_rec_len = entry->rec_len;
+
+                entry->rec_len = actual_len;
+
+                struct EXT2DirectoryEntry *new_entry = (struct EXT2DirectoryEntry *)((uint8_t *)entry + actual_len);
+
+                new_entry->inode = new_inode_num;
+                new_entry->rec_len = old_rec_len - actual_len;
+                new_entry->name_len = request->name_len;
+                new_entry->file_type = request->is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
+
+                char *entry_name_ptr = get_entry_name(new_entry);
+                memcpy(entry_name_ptr, request->name, request->name_len);
+
+                entry_added = true;
+                break;
+            }
+
+            offset += entry->rec_len;
+            if (offset < BLOCK_SIZE) {
+                entry = get_next_directory_entry(entry);
+            }
+        }
+
+        if (!entry_added) {
+            deallocate_node(new_inode_num);
             return -1;
         }
 
-        if (entry->rec_len - actual_len >= required_rec_len) {
-            uint16_t old_rec_len = entry->rec_len;
-
-            entry->rec_len = actual_len;
-
-            struct EXT2DirectoryEntry *new_entry = (struct EXT2DirectoryEntry *)((uint8_t *)entry + actual_len);
-
-            new_entry->inode = new_inode_num;
-            new_entry->rec_len = old_rec_len - actual_len;
-            new_entry->name_len = request->name_len;
-            new_entry->file_type = request->is_directory ? EXT2_FT_DIR : EXT2_FT_REG_FILE;
-
-            char *entry_name_ptr = get_entry_name(new_entry);
-            memcpy(entry_name_ptr, request->name, request->name_len);
-
-            entry_added = true;
-            break;
-        }
-
-        offset += entry->rec_len;
-        if (offset < parent_node.i_size) {
-            entry = get_next_directory_entry(entry);
-        }
+        write_blocks(parent_buf, target_dir_block, 1);
     }
 
-    if (!entry_added) {
-        return -1;
-    }
-
-    write_blocks(parent_buf, parent_node.i_block[0], 1);
     sync_node(&parent_node, request->parent_inode);
 
     write_filesystem_metadata();
@@ -798,24 +863,29 @@ static bool allocate_data_block(uint32_t *block_num) {
 }
 
 uint32_t allocate_node(void) {
-    if (bgd_table.table[0].bg_free_inodes_count == 0 ||
-        superblock.s_free_inodes_count == 0) {
+    if (superblock.s_free_inodes_count == 0) {
         return 0;
     }
 
-    uint8_t bitmap[BLOCK_SIZE];
-    uint32_t bitmap_block = bgd_table.table[0].bg_inode_bitmap;
-    read_blocks(bitmap, bitmap_block, 1);
+    for (uint32_t group = 0; group < GROUPS_COUNT; group++) {
+        if (bgd_table.table[group].bg_free_inodes_count == 0) {
+            continue;
+        }
 
-    for (uint32_t bit = 0; bit < INODES_PER_GROUP; bit++) {
-        uint8_t mask = (uint8_t)(1u << (bit % 8));
-        if ((bitmap[bit / 8] & mask) == 0) {
-            bitmap[bit / 8] |= mask;
-            write_blocks(bitmap, bitmap_block, 1);
-            bgd_table.table[0].bg_free_inodes_count--;
-            superblock.s_free_inodes_count--;
-            write_filesystem_metadata();
-            return bit + 1;
+        uint8_t bitmap[BLOCK_SIZE];
+        uint32_t bitmap_block = bgd_table.table[group].bg_inode_bitmap;
+        read_blocks(bitmap, bitmap_block, 1);
+
+        for (uint32_t bit = 0; bit < INODES_PER_GROUP; bit++) {
+            uint8_t mask = (uint8_t)(1u << (bit % 8));
+            if ((bitmap[bit / 8] & mask) == 0) {
+                bitmap[bit / 8] |= mask;
+                write_blocks(bitmap, bitmap_block, 1);
+                bgd_table.table[group].bg_free_inodes_count--;
+                superblock.s_free_inodes_count--;
+                write_filesystem_metadata();
+                return group * INODES_PER_GROUP + bit + 1;
+            }
         }
     }
 
@@ -848,6 +918,13 @@ void allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_b
     for (uint32_t i = 0; i < blocks_needed; i++) {
         uint32_t data_block;
         if (!allocate_data_block(&data_block)) {
+            if (indirect_block != 0) {
+                node->i_block[12] = indirect_block;
+                write_blocks(indirect, indirect_block, 1);
+            }
+            deallocate_blocks(node->i_block, i + (indirect_block != 0 ? 1u : 0u));
+            memset(node->i_block, 0, sizeof(node->i_block));
+            write_filesystem_metadata();
             return;
         }
 

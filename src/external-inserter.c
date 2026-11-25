@@ -95,8 +95,9 @@ int main(int argc, char *argv[]) {
     request.name = name;
     request.name_len = filename_length;
     request.is_directory = false;
-    sscanf(parent_str, "%u", &request.parent_inode);
-    sscanf(target_path, "%s", request.name);
+    unsigned int parent_inode = 0;
+    sscanf(parent_str, "%u", &parent_inode);
+    request.parent_inode = parent_inode;
 
     reqread = request;
     reqread.buf = read_buffer;
@@ -123,7 +124,8 @@ int main(int argc, char *argv[]) {
     if (retcode == 1 && is_replace)
     {
         retcode = delete (request);
-        retcode = write(&request);
+        if (retcode == 0)
+            retcode = write(&request);
     }
     if (retcode == 0)
         puts("Write success");
@@ -133,6 +135,12 @@ int main(int argc, char *argv[]) {
         puts("Error: Invalid parent node index");
     else
         puts("Error: Unknown error");
+
+    if (retcode != 0)
+    {
+        fclose(fptr);
+        return 1;
+    }
 
     // Write image in memory into original, overwrite them
     fseek(fptr, 0, SEEK_SET);
