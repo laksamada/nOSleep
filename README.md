@@ -7,7 +7,7 @@
   it boots and multitasks and even plays Bad Apple!!. sleep was never part of the plan.
 </p>
 
-## meet Owlnighter
+<img src="docs/h-meet.png" alt="meet Owlnighter" width="100%">
 
 <img src="docs/mascot.png" alt="Owlnighter, the nOSleep owl" width="160" align="right">
 
@@ -17,7 +17,7 @@ Also there is no light mode. Owlnighter is sensitive to light and we respect tha
 
 <br clear="right">
 
-## what it can do
+<img src="docs/h-features.png" alt="what it can do" width="100%">
 
 <p align="center">
   <img src="docs/screenshot-desktop.png" alt="nOSleep desktop with the Terminal window" width="49%">
@@ -30,7 +30,7 @@ Also there is no light mode. Owlnighter is sensitive to light and we respect tha
 - **paging that respects boundaries.** every process gets its own page directory. Pages load on demand and swap to disk when RAM gets tight.
 - **Bad Apple!! at 20 FPS.** 4381 frames squeezed into 712 KB and read from 12 files on disk. Hit Esc or the red X to dip.
 
-## run it
+<img src="docs/h-run.png" alt="run it" width="100%">
 
 You need Ubuntu or WSL with `gcc` `nasm` `make` `genisoimage` `qemu-system-i386` and `qemu-img`. macOS works too through Homebrew LLVM.
 
@@ -43,7 +43,7 @@ make run-nogdb
 
 Click the Terminal window and type `help`. `badapple` is right there no cap.
 
-## credits
+<img src="docs/h-credits.png" alt="credits" width="100%">
 
 - base kit from [OS Template 2026](https://github.com/Nathan-Marpaung/os-template-2026) by the Lab Sister ITB assistants
 - [Bad Apple!!](https://youtu.be/FtutLA63Cp8) by Alstroemeria Records and Anira for the course bonus
