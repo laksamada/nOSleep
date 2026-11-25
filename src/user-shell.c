@@ -12,9 +12,12 @@
 #define ROOT_INODE 1
 
 #define IO_BUFFER_SIZE 0x40000u
+#define DIR_BUFFER_SIZE (4u * BLOCK_SIZE)
+#define MAX_FILE_SIZE  ((12u + BLOCK_SIZE / 4u) * BLOCK_SIZE)
 #define FILE_BUFFER    ((uint8_t *) 0x100000)
 #define PIPE_BUFFER_A  ((char *) 0x140000)
 #define PIPE_BUFFER_B  ((char *) 0x180000)
+#define BACKUP_BUFFER  ((uint8_t *) 0x1C0000)
 
 #define MEMTEST_BASE      0x200000u
 #define MEMTEST_MAX_PAGES 496u
@@ -144,24 +147,36 @@ static void print_prompt(void) {
     sys_puts("> ", COLOR_OUTPUT);
 }
 
-static bool read_directory_block(uint32_t inode, uint8_t *block) {
+static bool read_directory_data(uint32_t inode, uint8_t *buf, uint32_t *out_size) {
+    uint32_t dir_size = 0;
+    syscall(9, inode, (uint32_t) &dir_size, 0);
+    if (dir_size == 0)
+        dir_size = BLOCK_SIZE;
+    if (dir_size > DIR_BUFFER_SIZE)
+        dir_size = DIR_BUFFER_SIZE;
     struct EXT2DriverRequest request = {
-        .buf          = block,
+        .buf          = buf,
         .name         = NULL,
         .name_len     = 0,
         .parent_inode = inode,
-        .buffer_size  = BLOCK_SIZE,
+        .buffer_size  = dir_size,
     };
     int8_t retcode = -1;
     syscall(1, (uint32_t) &request, (uint32_t) &retcode, 0);
-    return retcode == 0;
+    if (retcode != 0)
+        return false;
+    *out_size = dir_size;
+    return true;
 }
 
 static struct EXT2DirectoryEntry *next_entry(uint8_t *block, uint32_t *offset) {
-    if (*offset >= BLOCK_SIZE)
+    if (*offset + sizeof(struct EXT2DirectoryEntry) > BLOCK_SIZE)
         return NULL;
     struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *) (block + *offset);
-    if (entry->inode == 0 || entry->rec_len == 0)
+    if (entry->inode == 0 || entry->rec_len < sizeof(struct EXT2DirectoryEntry) ||
+        entry->rec_len > BLOCK_SIZE - *offset)
+        return NULL;
+    if (entry->name_len > entry->rec_len - sizeof(struct EXT2DirectoryEntry))
         return NULL;
     *offset += entry->rec_len;
     return entry;
@@ -186,17 +201,20 @@ static void copy_entry_name(struct EXT2DirectoryEntry *entry, char *dest) {
 }
 
 static bool find_entry(uint32_t parent, const char *name, uint32_t *inode, uint8_t *file_type) {
-    uint8_t block[BLOCK_SIZE];
-    if (!read_directory_block(parent, block))
+    uint8_t buf[DIR_BUFFER_SIZE];
+    uint32_t dir_size = 0;
+    if (!read_directory_data(parent, buf, &dir_size))
         return false;
 
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(block, &offset)) != NULL) {
-        if (entry_name_equal(entry, name)) {
-            *inode = entry->inode;
-            *file_type = entry->file_type;
-            return true;
+    for (uint32_t blk = 0; blk + BLOCK_SIZE <= dir_size; blk += BLOCK_SIZE) {
+        uint32_t offset = 0;
+        struct EXT2DirectoryEntry *entry;
+        while ((entry = next_entry(buf + blk, &offset)) != NULL) {
+            if (entry_name_equal(entry, name)) {
+                *inode = entry->inode;
+                *file_type = entry->file_type;
+                return true;
+            }
         }
     }
     return false;
@@ -228,7 +246,7 @@ static int8_t delete_entry(uint32_t parent, const char *name, bool is_directory)
     return retcode;
 }
 
-static int8_t load_file(uint32_t parent, const char *name, uint32_t *size) {
+static int8_t load_file_to(uint32_t parent, const char *name, uint8_t *dest, uint32_t *size) {
     uint32_t inode;
     uint8_t file_type;
     if (!find_entry(parent, name, &inode, &file_type))
@@ -241,7 +259,7 @@ static int8_t load_file(uint32_t parent, const char *name, uint32_t *size) {
         return 2;
 
     struct EXT2DriverRequest request = {
-        .buf          = FILE_BUFFER,
+        .buf          = dest,
         .name         = (char *) name,
         .name_len     = strlen(name),
         .parent_inode = parent,
@@ -250,6 +268,10 @@ static int8_t load_file(uint32_t parent, const char *name, uint32_t *size) {
     int8_t retcode = -1;
     syscall(0, (uint32_t) &request, (uint32_t) &retcode, 0);
     return retcode;
+}
+
+static int8_t load_file(uint32_t parent, const char *name, uint32_t *size) {
+    return load_file_to(parent, name, FILE_BUFFER, size);
 }
 
 static bool copy_tree(uint32_t src_parent, const char *src_name, uint32_t dest_parent, const char *dest_name) {
@@ -272,19 +294,22 @@ static bool copy_tree(uint32_t src_parent, const char *src_name, uint32_t dest_p
     if (!find_entry(dest_parent, dest_name, &dest_inode, &file_type))
         return false;
 
-    uint8_t block[BLOCK_SIZE];
-    if (!read_directory_block(inode, block))
+    uint8_t buf[DIR_BUFFER_SIZE];
+    uint32_t dir_size = 0;
+    if (!read_directory_data(inode, buf, &dir_size))
         return false;
 
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(block, &offset)) != NULL) {
-        if (is_dot_entry(entry))
-            continue;
-        char child[MAX_NAME_LEN];
-        copy_entry_name(entry, child);
-        if (!copy_tree(inode, child, dest_inode, child))
-            return false;
+    for (uint32_t blk = 0; blk + BLOCK_SIZE <= dir_size; blk += BLOCK_SIZE) {
+        uint32_t offset = 0;
+        struct EXT2DirectoryEntry *entry;
+        while ((entry = next_entry(buf + blk, &offset)) != NULL) {
+            if (is_dot_entry(entry))
+                continue;
+            char child[MAX_NAME_LEN];
+            copy_entry_name(entry, child);
+            if (!copy_tree(inode, child, dest_inode, child))
+                return false;
+        }
     }
     return true;
 }
@@ -297,21 +322,60 @@ static bool remove_tree(uint32_t parent, const char *name) {
     if (file_type != EXT2_FT_DIR)
         return delete_entry(parent, name, false) == 0;
 
-    uint8_t block[BLOCK_SIZE];
-    if (!read_directory_block(inode, block))
+    uint8_t buf[DIR_BUFFER_SIZE];
+    uint32_t dir_size = 0;
+    if (!read_directory_data(inode, buf, &dir_size))
         return false;
 
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(block, &offset)) != NULL) {
-        if (is_dot_entry(entry))
-            continue;
-        char child[MAX_NAME_LEN];
-        copy_entry_name(entry, child);
-        if (!remove_tree(inode, child))
-            return false;
+    for (uint32_t blk = 0; blk + BLOCK_SIZE <= dir_size; blk += BLOCK_SIZE) {
+        uint32_t offset = 0;
+        struct EXT2DirectoryEntry *entry;
+        while ((entry = next_entry(buf + blk, &offset)) != NULL) {
+            if (is_dot_entry(entry))
+                continue;
+            char child[MAX_NAME_LEN];
+            copy_entry_name(entry, child);
+            if (!remove_tree(inode, child))
+                return false;
+        }
     }
     return delete_entry(parent, name, true) == 0;
+}
+
+static bool is_ancestor_dir(uint32_t ancestor, uint32_t dir) {
+    for (int step = 0; step < 64; step++) {
+        if (dir == ancestor)
+            return true;
+        if (dir == ROOT_INODE)
+            return false;
+        uint32_t parent_inode;
+        uint8_t file_type;
+        if (!find_entry(dir, "..", &parent_inode, &file_type) || parent_inode == dir)
+            return false;
+        dir = parent_inode;
+    }
+    return false;
+}
+
+static bool write_file_safe(uint32_t parent, const char *name, const void *buf, uint32_t size, bool overwrite) {
+    if (size > MAX_FILE_SIZE)
+        return false;
+    if (!overwrite)
+        return write_entry(parent, name, (void *) buf, size, false) == 0;
+
+    uint32_t old_size = 0;
+    bool backed_up = load_file_to(parent, name, BACKUP_BUFFER, &old_size) == 0;
+    if (!backed_up)
+        return false;
+
+    if (delete_entry(parent, name, false) != 0)
+        return false;
+
+    if (write_entry(parent, name, (void *) buf, size, false) == 0)
+        return true;
+
+    write_entry(parent, name, BACKUP_BUFFER, old_size, false);
+    return false;
 }
 
 static bool resolve_destination(const char *src, const char *dest, uint32_t *dest_parent, const char **dest_name) {
@@ -333,15 +397,21 @@ static bool resolve_destination(const char *src, const char *dest, uint32_t *des
     return true;
 }
 
-static bool prepare_destination(const char *command, const char *src, uint32_t dest_parent, const char *dest_name) {
+static bool prepare_destination(const char *command, const char *src, uint32_t dest_parent,
+                                const char *dest_name, bool *overwrite) {
     uint32_t src_inode, dest_inode;
     uint8_t src_type, dest_type;
 
+    *overwrite = false;
+    if (strcmp(dest_name, ".") == 0 || strcmp(dest_name, "..") == 0) {
+        print_error(command, "invalid destination:", dest_name);
+        return false;
+    }
     if (!find_entry(current_dir_inode, src, &src_inode, &src_type)) {
         print_error(command, "not found:", src);
         return false;
     }
-    if (src_inode == dest_parent) {
+    if (src_inode == dest_parent || (src_type == EXT2_FT_DIR && is_ancestor_dir(src_inode, dest_parent))) {
         print_error(command, "cannot copy or move into itself:", src);
         return false;
     }
@@ -356,29 +426,33 @@ static bool prepare_destination(const char *command, const char *src, uint32_t d
         print_error(command, "destination is an existing folder:", dest_name);
         return false;
     }
-    if (delete_entry(dest_parent, dest_name, false) != 0) {
-        print_error(command, "failed to overwrite", dest_name);
+    if (src_type == EXT2_FT_DIR) {
+        print_error(command, "cannot overwrite non-folder with folder:", dest_name);
         return false;
     }
+    *overwrite = true;
     return true;
 }
 
 static bool cmd_ls(void) {
-    uint8_t block[BLOCK_SIZE];
-    if (!read_directory_block(current_dir_inode, block)) {
+    uint8_t buf[DIR_BUFFER_SIZE];
+    uint32_t dir_size = 0;
+    if (!read_directory_data(current_dir_inode, buf, &dir_size)) {
         print_error("ls", "failed to read directory", NULL);
         return false;
     }
 
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(block, &offset)) != NULL) {
-        if (is_dot_entry(entry))
-            continue;
-        out_buffer(entry_name(entry), entry->name_len);
-        if (entry->file_type == EXT2_FT_DIR)
-            out_char('/');
-        out_char('\n');
+    for (uint32_t blk = 0; blk + BLOCK_SIZE <= dir_size; blk += BLOCK_SIZE) {
+        uint32_t offset = 0;
+        struct EXT2DirectoryEntry *entry;
+        while ((entry = next_entry(buf + blk, &offset)) != NULL) {
+            if (is_dot_entry(entry))
+                continue;
+            out_buffer(entry_name(entry), entry->name_len);
+            if (entry->file_type == EXT2_FT_DIR)
+                out_char('/');
+            out_char('\n');
+        }
     }
     return true;
 }
@@ -447,8 +521,6 @@ static bool cmd_cat(const char *name) {
         print_error("cat", "file not found:", name);
     } else {
         out_buffer((const char *) FILE_BUFFER, size);
-        if (size == 0 || FILE_BUFFER[size - 1] != '\n')
-            out_char('\n');
     }
     return retcode == 0;
 }
@@ -457,6 +529,7 @@ static bool cmd_cp(const char *src, const char *dest, bool recursive) {
     uint32_t inode, dest_parent;
     uint8_t file_type;
     const char *dest_name;
+    bool overwrite = false;
 
     if (!find_entry(current_dir_inode, src, &inode, &file_type)) {
         print_error("cp", "not found:", src);
@@ -467,8 +540,18 @@ static bool cmd_cp(const char *src, const char *dest, bool recursive) {
         return false;
     }
     if (!resolve_destination(src, dest, &dest_parent, &dest_name) ||
-        !prepare_destination("cp", src, dest_parent, dest_name))
+        !prepare_destination("cp", src, dest_parent, dest_name, &overwrite))
         return false;
+
+    if (file_type != EXT2_FT_DIR) {
+        uint32_t size = 0;
+        if (load_file(current_dir_inode, src, &size) != 0 ||
+            !write_file_safe(dest_parent, dest_name, FILE_BUFFER, size, overwrite)) {
+            print_error("cp", "failed to copy", src);
+            return false;
+        }
+        return true;
+    }
     if (!copy_tree(current_dir_inode, src, dest_parent, dest_name)) {
         print_error("cp", "failed to copy", src);
         return false;
@@ -500,13 +583,32 @@ static bool cmd_rm(const char *name, bool recursive) {
 }
 
 static bool cmd_mv(const char *src, const char *dest) {
-    uint32_t dest_parent;
+    uint32_t inode, dest_parent;
+    uint8_t file_type;
     const char *dest_name;
+    bool overwrite = false;
 
-    if (!resolve_destination(src, dest, &dest_parent, &dest_name) ||
-        !prepare_destination("mv", src, dest_parent, dest_name))
+    if (strcmp(src, ".") == 0 || strcmp(src, "..") == 0) {
+        print_error("mv", "cannot move", src);
         return false;
-    if (!copy_tree(current_dir_inode, src, dest_parent, dest_name)) {
+    }
+    if (!find_entry(current_dir_inode, src, &inode, &file_type)) {
+        print_error("mv", "not found:", src);
+        return false;
+    }
+    if (!resolve_destination(src, dest, &dest_parent, &dest_name) ||
+        !prepare_destination("mv", src, dest_parent, dest_name, &overwrite))
+        return false;
+
+    bool copied = false;
+    if (file_type != EXT2_FT_DIR) {
+        uint32_t size = 0;
+        copied = load_file(current_dir_inode, src, &size) == 0 &&
+                 write_file_safe(dest_parent, dest_name, FILE_BUFFER, size, overwrite);
+    } else {
+        copied = copy_tree(current_dir_inode, src, dest_parent, dest_name);
+    }
+    if (!copied) {
         print_error("mv", "failed to move", src);
         return false;
     }
@@ -518,31 +620,34 @@ static bool cmd_mv(const char *src, const char *dest) {
 }
 
 static void find_walk(uint32_t inode, uint32_t path_len, const char *target) {
-    uint8_t block[BLOCK_SIZE];
-    if (!read_directory_block(inode, block))
+    uint8_t buf[DIR_BUFFER_SIZE];
+    uint32_t dir_size = 0;
+    if (!read_directory_data(inode, buf, &dir_size))
         return;
 
-    uint32_t offset = 0;
-    struct EXT2DirectoryEntry *entry;
-    while ((entry = next_entry(block, &offset)) != NULL) {
-        if (is_dot_entry(entry) || path_len + entry->name_len + 2 >= MAX_PATH_LEN)
-            continue;
+    for (uint32_t blk = 0; blk + BLOCK_SIZE <= dir_size; blk += BLOCK_SIZE) {
+        uint32_t offset = 0;
+        struct EXT2DirectoryEntry *entry;
+        while ((entry = next_entry(buf + blk, &offset)) != NULL) {
+            if (is_dot_entry(entry) || path_len + entry->name_len + 2 >= MAX_PATH_LEN)
+                continue;
 
-        uint32_t new_len = path_len + entry->name_len;
-        bool is_directory = entry->file_type == EXT2_FT_DIR;
-        memcpy(find_path + path_len, entry_name(entry), entry->name_len);
-        find_path[new_len] = '\0';
+            uint32_t new_len = path_len + entry->name_len;
+            bool is_directory = entry->file_type == EXT2_FT_DIR;
+            memcpy(find_path + path_len, entry_name(entry), entry->name_len);
+            find_path[new_len] = '\0';
 
-        if (entry_name_equal(entry, target)) {
-            out_str(find_path);
-            if (is_directory)
-                out_char('/');
-            out_char('\n');
-            find_count++;
-        }
-        if (is_directory) {
-            find_path[new_len] = '/';
-            find_walk(entry->inode, new_len + 1, target);
+            if (entry_name_equal(entry, target)) {
+                out_str(find_path);
+                if (is_directory)
+                    out_char('/');
+                out_char('\n');
+                find_count++;
+            }
+            if (is_directory) {
+                find_path[new_len] = '/';
+                find_walk(entry->inode, new_len + 1, target);
+            }
         }
     }
 }
@@ -1006,16 +1111,18 @@ static int split_pipeline(char *line, char *stages[]) {
 }
 
 static bool write_redirect(const char *name) {
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        print_error("shell", "invalid filename:", name);
+        return false;
+    }
     uint32_t inode;
     uint8_t file_type;
-    if (find_entry(current_dir_inode, name, &inode, &file_type)) {
-        if (file_type == EXT2_FT_DIR) {
-            print_error("shell", "destination is a folder:", name);
-            return false;
-        }
-        delete_entry(current_dir_inode, name, false);
+    bool exists = find_entry(current_dir_inode, name, &inode, &file_type);
+    if (exists && file_type == EXT2_FT_DIR) {
+        print_error("shell", "destination is a folder:", name);
+        return false;
     }
-    if (write_entry(current_dir_inode, name, output_buffer, output_len, false) != 0) {
+    if (!write_file_safe(current_dir_inode, name, output_buffer, output_len, exists)) {
         print_error("shell", "failed to write file", name);
         return false;
     }
