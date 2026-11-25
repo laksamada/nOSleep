@@ -4,7 +4,9 @@
 #include "header/stdlib/string.h"
 #include "header/filesystem/ext2.h"
 
-// Instance variabel global 
+#define RESERVED_BLOCKS_PER_GROUP 21u
+
+// Instance variabel global
 struct EXT2Superblock superblock;
 struct EXT2BlockGroupDescriptorTable bgd_table;
 
@@ -87,7 +89,7 @@ void create_ext2(void) {
     superblock.s_inodes_count      = INODES_PER_GROUP * GROUPS_COUNT;
     superblock.s_blocks_count      = BLOCKS_PER_GROUP * GROUPS_COUNT;
     superblock.s_r_blocks_count    = 0;
-    superblock.s_free_blocks_count = superblock.s_blocks_count - 22; // 22 block pertama terpakai sistem + root
+    superblock.s_free_blocks_count = superblock.s_blocks_count - RESERVED_BLOCKS_PER_GROUP * GROUPS_COUNT - 1;
     superblock.s_free_inodes_count = superblock.s_inodes_count - 1;  // Root inode (1)
     superblock.s_first_data_block  = 1;
     superblock.s_first_ino         = 1;
@@ -107,13 +109,13 @@ void create_ext2(void) {
         bgd_table.table[i].bg_block_bitmap      = base_block + 3;
         bgd_table.table[i].bg_inode_bitmap      = base_block + 4;
         bgd_table.table[i].bg_inode_table       = base_block + 5;
-        bgd_table.table[i].bg_free_blocks_count = BLOCKS_PER_GROUP;
+        bgd_table.table[i].bg_free_blocks_count = BLOCKS_PER_GROUP - RESERVED_BLOCKS_PER_GROUP;
         bgd_table.table[i].bg_free_inodes_count = INODES_PER_GROUP;
         bgd_table.table[i].bg_used_dirs_count   = 0;
     }
 
     // Group 0 memiliki root
-    bgd_table.table[0].bg_free_blocks_count -= 22;
+    bgd_table.table[0].bg_free_blocks_count -= 1;
     bgd_table.table[0].bg_free_inodes_count -= 1;
     bgd_table.table[0].bg_used_dirs_count   = 1;
 
@@ -125,11 +127,15 @@ void create_ext2(void) {
     uint8_t block_bitmap[BLOCK_SIZE] = {0};
     uint8_t inode_bitmap[BLOCK_SIZE] = {0};
 
-    for (uint32_t i = 0; i < 22; i++) {
+    for (uint32_t i = 0; i < RESERVED_BLOCKS_PER_GROUP; i++) {
         block_bitmap[i / 8] |= (1 << (i % 8));
     }
+    for (uint32_t i = 0; i < GROUPS_COUNT; i++) {
+        write_blocks(block_bitmap, bgd_table.table[i].bg_block_bitmap, 1);
+        write_blocks(inode_bitmap, bgd_table.table[i].bg_inode_bitmap, 1);
+    }
+    block_bitmap[RESERVED_BLOCKS_PER_GROUP / 8] |= (1 << (RESERVED_BLOCKS_PER_GROUP % 8));
     inode_bitmap[0] |= (1 << 0); // Inode 1 terpakai
-
     write_blocks(block_bitmap, bgd_table.table[0].bg_block_bitmap, 1);
     write_blocks(inode_bitmap, bgd_table.table[0].bg_inode_bitmap, 1);
 
@@ -615,6 +621,22 @@ void sync_node(struct EXT2Inode *node, uint32_t inode) {
     }
 }
 
+static bool directory_has_space(uint8_t *block, uint32_t directory_size, uint16_t required_rec_len) {
+    uint32_t offset = 0;
+    while (offset < BLOCK_SIZE && offset < directory_size) {
+        struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)(block + offset);
+        uint16_t actual_len = get_entry_record_len(entry->name_len);
+        if (entry->rec_len < actual_len || entry->rec_len > BLOCK_SIZE - offset) {
+            return false;
+        }
+        if (entry->rec_len - actual_len >= required_rec_len) {
+            return true;
+        }
+        offset += entry->rec_len;
+    }
+    return false;
+}
+
 int8_t write(struct EXT2DriverRequest *request) {
     // 1. Validasi pointer dasar & nama (return -1 jika invalid)
     if (request == NULL || request->name == NULL || request->name_len == 0 ||
@@ -652,7 +674,14 @@ int8_t write(struct EXT2DriverRequest *request) {
     }
     uint32_t blocks_to_allocate = blocks_needed + (blocks_needed > 12 ? 1u : 0u);
     if (blocks_needed > 12 + BLOCK_SIZE / sizeof(uint32_t) ||
-        blocks_to_allocate > bgd_table.table[0].bg_free_blocks_count) {
+        blocks_to_allocate > superblock.s_free_blocks_count) {
+        return -1;
+    }
+
+    uint8_t parent_buf[BLOCK_SIZE];
+    read_inode_content(&parent_node, parent_buf, BLOCK_SIZE);
+    uint16_t required_rec_len = get_entry_record_len(request->name_len);
+    if (!directory_has_space(parent_buf, parent_node.i_size, required_rec_len)) {
         return -1;
     }
 
@@ -689,11 +718,6 @@ int8_t write(struct EXT2DriverRequest *request) {
     }
 
     sync_node(&new_node, new_inode_num);
-
-    uint8_t parent_buf[BLOCK_SIZE];
-    read_inode_content(&parent_node, parent_buf, BLOCK_SIZE);
-
-    uint16_t required_rec_len = get_entry_record_len(request->name_len);
 
     struct EXT2DirectoryEntry *entry = (struct EXT2DirectoryEntry *)parent_buf;
     uint32_t offset = 0;
@@ -743,25 +767,30 @@ int8_t write(struct EXT2DriverRequest *request) {
 }
 
 static bool allocate_data_block(uint32_t *block_num) {
-    if (bgd_table.table[0].bg_free_blocks_count == 0 ||
-        superblock.s_free_blocks_count == 0) {
+    if (superblock.s_free_blocks_count == 0) {
         return false;
     }
 
-    uint8_t bitmap[BLOCK_SIZE];
-    uint32_t bitmap_block = bgd_table.table[0].bg_block_bitmap;
-    read_blocks(bitmap, bitmap_block, 1);
+    for (uint32_t group = 0; group < GROUPS_COUNT; group++) {
+        if (bgd_table.table[group].bg_free_blocks_count == 0) {
+            continue;
+        }
 
-    for (uint32_t bit = 0; bit < BLOCKS_PER_GROUP; bit++) {
-        uint8_t mask = (uint8_t)(1u << (bit % 8));
-        if ((bitmap[bit / 8] & mask) == 0) {
-            bitmap[bit / 8] |= mask;
-            write_blocks(bitmap, bitmap_block, 1);
-            bgd_table.table[0].bg_free_blocks_count--;
-            superblock.s_free_blocks_count--;
-            *block_num = bit;
-            write_filesystem_metadata();
-            return true;
+        uint8_t bitmap[BLOCK_SIZE];
+        uint32_t bitmap_block = bgd_table.table[group].bg_block_bitmap;
+        read_blocks(bitmap, bitmap_block, 1);
+
+        for (uint32_t bit = RESERVED_BLOCKS_PER_GROUP; bit < BLOCKS_PER_GROUP; bit++) {
+            uint8_t mask = (uint8_t)(1u << (bit % 8));
+            if ((bitmap[bit / 8] & mask) == 0) {
+                bitmap[bit / 8] |= mask;
+                write_blocks(bitmap, bitmap_block, 1);
+                bgd_table.table[group].bg_free_blocks_count--;
+                superblock.s_free_blocks_count--;
+                *block_num = group * BLOCKS_PER_GROUP + bit;
+                write_filesystem_metadata();
+                return true;
+            }
         }
     }
 
@@ -804,7 +833,7 @@ void allocate_node_blocks(void *ptr, struct EXT2Inode *node, uint32_t prefered_b
         return;
     }
     uint32_t total_blocks = blocks_needed + (blocks_needed > 12 ? 1u : 0u);
-    if (total_blocks > bgd_table.table[0].bg_free_blocks_count) {
+    if (total_blocks > superblock.s_free_blocks_count) {
         return;
     }
 
