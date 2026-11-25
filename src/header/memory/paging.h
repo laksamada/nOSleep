@@ -31,6 +31,7 @@
 
 #define PAGING_DIRECTORY_TABLE_MAX_COUNT 32
 #define KERNEL_PAGE_DIRECTORY_INDEX (KERNEL_VIRTUAL_ADDRESS_BASE >> 22)
+#define PAGE_4MB_SIZE 0x400000u
  
 // kernel's  page directory, using 4 KiB pages
 extern struct PageDirectory _paging_kernel_page_directory;
@@ -254,5 +255,9 @@ void paging_use_page_directory(struct PageDirectory *page_dir_virtual_addr);
 
 // Hitung frame fisik yang sedang dipakai page directory (termasuk page table)
 uint32_t paging_count_user_frames(struct PageDirectory *page_dir);
+
+// Map memori fisik ke ruang kernel memakai halaman 4 MiB, berlaku untuk page directory baru
+void paging_map_kernel_window(uint32_t virtual_addr, uint32_t physical_addr, uint32_t size);
+
  
 #endif

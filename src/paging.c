@@ -260,3 +260,20 @@ uint32_t paging_count_user_frames(struct PageDirectory *page_dir) {
     paging_use_page_directory(previous);
     return count;
 }
+
+void paging_map_kernel_window(uint32_t virtual_addr, uint32_t physical_addr, uint32_t size) {
+    uint32_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    __asm__ volatile("mov %0, %%cr4" : /* <Empty> */ : "r"(cr4 | 0x10));
+
+    for (uint32_t offset = 0; offset < size; offset += PAGE_4MB_SIZE) {
+        struct PageDirectoryEntry *entry = &_paging_kernel_page_directory.table[(virtual_addr + offset) >> 22];
+        entry->flag = (struct PageDirectoryEntryFlag) {
+            .present_bit       = true,
+            .write_bit         = true,
+            .use_pagesize_4_mb = true,
+        };
+        entry->page_table_base_address = (physical_addr + offset) >> 12;
+        flush_single_tlb((void *) (virtual_addr + offset));
+    }
+}

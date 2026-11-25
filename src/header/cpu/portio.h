@@ -25,4 +25,8 @@ uint8_t in(uint16_t port);
 void out16(uint16_t port, uint16_t data);
 
 uint16_t in16(uint16_t port);
+
+// Versi 32-bit dari out/in, dipakai untuk konfigurasi PCI
+void out32(uint16_t port, uint32_t data);
+uint32_t in32(uint16_t port);
 #endif

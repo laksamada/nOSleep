@@ -9,7 +9,7 @@
 #define SWAP_BLOCKS_PER_PAGE         8
 #define SWAP_START_BLOCK             (8192u - PAGE_FRAME_ON_SWAP_MAX_COUNT * SWAP_BLOCKS_PER_PAGE)
 #define SWAP_PTE_MARKER              0b001
-#define USER_PROGRAM_MEMORY_LIMIT    0x400000u
+#define USER_PROGRAM_MEMORY_LIMIT    0x4000000u
 
 struct SwapManager {
     bool     swap_used[PAGE_FRAME_ON_SWAP_MAX_COUNT];
